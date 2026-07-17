@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#202521">
+  <title>Matchup Board</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="Matchup Board">
+        <span class="brand-mark" aria-hidden="true"><i></i></span>
+        <span>Matchup Board</span>
+      </div>
+
+      <div class="top-actions">
+        <span class="save-state" id="saveState"><span></span>Saved locally</span>
+        <button class="button button-quiet" id="resetButton" type="button" title="Restore the example units">
+          Reset
+        </button>
+        <button class="button button-primary" id="showButton" type="button">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 3.1 7 4.4a.6.6 0 0 1 0 1l-7 4.4a.6.6 0 0 1-.9-.5V3.6a.6.6 0 0 1 .9-.5Z"/></svg>
+          <span>Show</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel roster-panel" aria-labelledby="rosterTitle">
+        <div class="section-bar">
+          <div class="section-title-wrap">
+            <h1 id="rosterTitle">Units</h1>
+            <span class="unit-count" id="unitCount">4 / 6</span>
+          </div>
+          <div class="rules-note" title="Normal damage is Strike minus Defence, with a minimum of 1. Armour piercing ignores Defence.">
+            <span>Damage</span> = STR − DEF <i></i> AP ignores DEF <i></i> first strike unknown
+          </div>
+          <button class="add-unit" id="addUnitButton" type="button">
+            <span aria-hidden="true">+</span> Add unit
+          </button>
+        </div>
+        <div class="unit-grid" id="unitGrid"></div>
+      </section>
+
+      <section class="panel results-panel" aria-labelledby="resultsTitle">
+        <div class="results-bar">
+          <div class="results-heading">
+            <h2 id="resultsTitle">Outcomes</h2>
+            <span id="resultsMeta">4 units · 12 matchups</span>
+          </div>
+          <div class="view-switcher" role="tablist" aria-label="Visualisation">
+            <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="bars">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></svg>
+              Matchups
+            </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="matrix">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h3v3H2zm4.5 0h3v3h-3zM11 2h3v3h-3zM2 6.5h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3zM2 11h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3z"/></svg>
+              Matrix
+            </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="profile">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.25h12v1.5H2zM4 4.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Zm5 3.5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 9 8Zm3-5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 12 3Z"/></svg>
+              Profile
+            </button>
+          </div>
+        </div>
+        <div class="result-stage" id="resultStage" aria-live="polite"></div>
+      </section>
+    </main>
+  </div>
+
+  <template id="unitCardTemplate">
+    <article class="unit-card">
+      <div class="unit-card-top">
+        <label class="colour-control" title="Unit colour">
+          <span class="sr-only">Unit colour</span>
+          <input type="color" data-field="color">
+        </label>
+        <label class="name-control">
+          <span class="sr-only">Unit name</span>
+          <input type="text" maxlength="24" data-field="name" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="remove-unit" type="button" data-action="remove" title="Remove unit" aria-label="Remove unit">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 4.5h9M6 2.5h4m-5.5 2 .6 9h5.8l.6-9M6.8 6.5v5m2.4-5v5"/></svg>
+        </button>
+      </div>
+      <div class="stats-row">
+        <label class="stat-control"><span>STR</span><input type="number" min="0" max="99" inputmode="numeric" data-field="strike"></label>
+        <label class="stat-control"><span>DEF</span><input type="number" min="0" max="99" inputmode="numeric" data-field="defense"></label>
+        <label class="stat-control hp-control"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
+        <label class="ap-control">
+          <input type="checkbox" data-field="ap">
+          <span class="ap-toggle" aria-hidden="true"></span>
+          <span>AP</span>
+        </label>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
