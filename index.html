@@ -30,8 +30,8 @@
             <h1 id="rosterTitle">Units</h1>
             <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
-          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+.">
-            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> first strike unknown
+          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+. Every natural 6 scores a hit and adds another die, which can also explode.">
+            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode <i></i> first strike unknown
           </div>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
@@ -47,17 +47,21 @@
             <span id="resultsMeta">4 units · 12 matchups</span>
           </div>
           <div class="outcome-key" aria-label="Matchup details key">
-            <span><i aria-hidden="true">◷</i> winner's attack turns</span>
+            <span><i aria-hidden="true">◷</i> expected rounds</span>
             <span><i class="heart-key" aria-hidden="true">♥</i> winner's HP</span>
           </div>
           <div class="view-switcher" role="tablist" aria-label="Visualisation">
-            <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="bars">
+            <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="matrix">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h3v3H2zm4.5 0h3v3h-3zM11 2h3v3h-3zM2 6.5h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3zM2 11h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3z"/></svg>
+              Matrix
+            </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="bars">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></svg>
               Matchups
             </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="matrix">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h3v3H2zm4.5 0h3v3h-3zM11 2h3v3h-3zM2 6.5h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3zM2 11h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3z"/></svg>
-              Matrix
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="counters">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2Zm10 6.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2ZM4.4 5.3l7.2 5.4m-.1-1.9.4 2.2-2.2-.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Counters
             </button>
             <button class="view-button" type="button" role="tab" aria-selected="false" data-view="profile">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.25h12v1.5H2zM4 4.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Zm5 3.5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 9 8Zm3-5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 12 3Z"/></svg>

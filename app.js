@@ -1,6 +1,8 @@
 const STORAGE_KEY = "matchup-board-units-v1";
-const VIEW_KEY = "matchup-board-view-v1";
+const VIEW_KEY = "matchup-board-view-v2";
 const MATCHUP_ORDER_KEY = "matchup-board-matchup-orders-v1";
+const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
+const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const MAX_UNITS = 16;
 const MIN_UNITS = 2;
 const PALETTE = ["#c95f4b", "#597fb3", "#d49a38", "#64865a", "#8b68a5", "#3e9a96"];
@@ -19,12 +21,15 @@ const resetButton = document.querySelector("#resetButton");
 const saveState = document.querySelector("#saveState");
 const resultStage = document.querySelector("#resultStage");
 const resultsMeta = document.querySelector("#resultsMeta");
+const outcomeKey = document.querySelector(".outcome-key");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
 const viewButtons = [...document.querySelectorAll(".view-button")];
 
 let units = loadUnits();
 let shownUnits = cloneUnits(units);
 let activeView = loadView();
+let matrixSort = loadMatrixSort();
+let counterThreshold = loadCounterThreshold();
 let matchupCache = new Map();
 let updateTimer = null;
 let draggedUnitId = null;
@@ -65,7 +70,17 @@ function loadUnits() {
 
 function loadView() {
   const saved = localStorage.getItem(VIEW_KEY);
-  return ["bars", "matrix", "profile"].includes(saved) ? saved : "bars";
+  return ["bars", "matrix", "counters", "profile"].includes(saved) ? saved : "matrix";
+}
+
+function loadMatrixSort() {
+  const saved = localStorage.getItem(MATRIX_SORT_KEY);
+  return ["roster", "strength", "similar"].includes(saved) ? saved : "roster";
+}
+
+function loadCounterThreshold() {
+  const saved = Number(localStorage.getItem(COUNTER_THRESHOLD_KEY));
+  return [60, 65, 70, 75, 80].includes(saved) ? saved : 80;
 }
 
 function saveUnits() {
@@ -337,22 +352,52 @@ function hitChance(attacker, defender) {
   return (7 - defender.defense) / 6;
 }
 
-function binomialDistribution(dice, chance) {
-  const distribution = new Float64Array(dice + 1);
-
-  if (chance === 1) {
-    distribution[dice] = 1;
-    return distribution;
-  }
-
+function explodingHitDistribution(dice, chance, lethalHits) {
+  const cap = Math.max(1, lethalHits);
+  const explodeChance = 1 / 6;
   const missChance = 1 - chance;
-  distribution[0] = missChance ** dice;
-  for (let hits = 1; hits <= dice; hits += 1) {
-    distribution[hits] = distribution[hits - 1]
-      * ((dice - hits + 1) / hits)
-      * (chance / missChance);
+  const nonExplodingHitChance = chance - explodeChance;
+  const singleDie = new Float64Array(cap + 1);
+  singleDie[0] = missChance;
+
+  let representedChance = missChance;
+  for (let hits = 1; hits < cap; hits += 1) {
+    singleDie[hits] = explodeChance ** (hits - 1)
+      * (nonExplodingHitChance + explodeChance * missChance);
+    representedChance += singleDie[hits];
   }
+  singleDie[cap] = Math.max(0, 1 - representedChance);
+
+  let distribution = new Float64Array(cap + 1);
+  distribution[0] = 1;
+  for (let die = 0; die < dice; die += 1) {
+    const combined = new Float64Array(cap + 1);
+    for (let currentHits = 0; currentHits <= cap; currentHits += 1) {
+      if (distribution[currentHits] === 0) continue;
+      for (let addedHits = 0; addedHits <= cap; addedHits += 1) {
+        const totalHits = Math.min(cap, currentHits + addedHits);
+        combined[totalHits] += distribution[currentHits] * singleDie[addedHits];
+      }
+    }
+    distribution = combined;
+  }
+
   return distribution;
+}
+
+function expectedAttackTurnsToKill(hitDistribution, hp) {
+  const turns = new Float64Array(hp + 1);
+  const successfulTurnChance = 1 - hitDistribution[0];
+
+  for (let remainingHp = 1; remainingHp <= hp; remainingHp += 1) {
+    let futureTurns = 0;
+    for (let hits = 1; hits < hitDistribution.length && hits < remainingHp; hits += 1) {
+      futureTurns += hitDistribution[hits] * turns[remainingHp - hits];
+    }
+    turns[remainingHp] = (1 + futureTurns) / successfulTurnChance;
+  }
+
+  return turns[hp];
 }
 
 function matchupKey(a, b) {
@@ -367,8 +412,8 @@ function getMatchup(a, b) {
 
   const chanceA = hitChance(a, b);
   const chanceB = hitChance(b, a);
-  const hitsA = binomialDistribution(a.strike, chanceA);
-  const hitsB = binomialDistribution(b.strike, chanceB);
+  const hitsA = explodingHitDistribution(a.strike, chanceA, b.hp);
+  const hitsB = explodingHitDistribution(b.strike, chanceB, a.hp);
   const makeTable = () => Array.from({ length: a.hp + 1 }, () => new Float64Array(b.hp + 1));
   const aFirst = makeTable();
   const bFirst = makeTable();
@@ -380,6 +425,12 @@ function getMatchup(a, b) {
   const bVictoryTurnsFromB = makeTable();
   const bVictoryHpFromA = makeTable();
   const bVictoryHpFromB = makeTable();
+  const battleTurnsFromA = makeTable();
+  const battleTurnsFromB = makeTable();
+  const aActivationsFromA = makeTable();
+  const aActivationsFromB = makeTable();
+  const bActivationsFromA = makeTable();
+  const bActivationsFromB = makeTable();
 
   for (let hpA = 1; hpA <= a.hp; hpA += 1) {
     for (let hpB = 1; hpB <= b.hp; hpB += 1) {
@@ -388,6 +439,9 @@ function getMatchup(a, b) {
       let aHpAfterAHit = 0;
       let bTurnsAfterAHit = 0;
       let bHpAfterAHit = 0;
+      let battleTurnsAfterAHit = 0;
+      let aActivationsAfterAHit = 0;
+      let bActivationsAfterAHit = 0;
       for (let hits = 1; hits < hitsA.length; hits += 1) {
         const probability = hitsA[hits];
         if (hits >= hpB) {
@@ -400,6 +454,9 @@ function getMatchup(a, b) {
           aHpAfterAHit += probability * aVictoryHpFromB[hpA][remainingB];
           bTurnsAfterAHit += probability * bVictoryTurnsFromB[hpA][remainingB];
           bHpAfterAHit += probability * bVictoryHpFromB[hpA][remainingB];
+          battleTurnsAfterAHit += probability * battleTurnsFromB[hpA][remainingB];
+          aActivationsAfterAHit += probability * aActivationsFromB[hpA][remainingB];
+          bActivationsAfterAHit += probability * bActivationsFromB[hpA][remainingB];
         }
       }
 
@@ -408,6 +465,9 @@ function getMatchup(a, b) {
       let aHpAfterBHit = 0;
       let bTurnsAfterBHit = 0;
       let bHpAfterBHit = 0;
+      let battleTurnsAfterBHit = 0;
+      let aActivationsAfterBHit = 0;
+      let bActivationsAfterBHit = 0;
       for (let hits = 1; hits < hitsB.length; hits += 1) {
         const probability = hitsB[hits];
         if (hits >= hpA) {
@@ -419,6 +479,9 @@ function getMatchup(a, b) {
           aHpAfterBHit += probability * aVictoryHpFromA[remainingA][hpB];
           bTurnsAfterBHit += probability * bVictoryTurnsFromA[remainingA][hpB];
           bHpAfterBHit += probability * bVictoryHpFromA[remainingA][hpB];
+          battleTurnsAfterBHit += probability * battleTurnsFromA[remainingA][hpB];
+          aActivationsAfterBHit += probability * aActivationsFromA[remainingA][hpB];
+          bActivationsAfterBHit += probability * bActivationsFromA[remainingA][hpB];
         }
       }
 
@@ -445,6 +508,31 @@ function getMatchup(a, b) {
         + bWinChanceFromB;
       bVictoryHpFromA[hpA][hpB] = (hitsA[0] * bHpAfterBHit + bHpAfterAHit) / denominator;
       bVictoryHpFromB[hpA][hpB] = hitsB[0] * bVictoryHpFromA[hpA][hpB] + bHpAfterBHit;
+
+      battleTurnsFromA[hpA][hpB] = (
+        1
+        + hitsA[0]
+        + hitsA[0] * battleTurnsAfterBHit
+        + battleTurnsAfterAHit
+      ) / denominator;
+      battleTurnsFromB[hpA][hpB] = 1
+        + hitsB[0] * battleTurnsFromA[hpA][hpB]
+        + battleTurnsAfterBHit;
+
+      aActivationsFromA[hpA][hpB] = (
+        1
+        + hitsA[0] * aActivationsAfterBHit
+        + aActivationsAfterAHit
+      ) / denominator;
+      aActivationsFromB[hpA][hpB] = hitsB[0] * aActivationsFromA[hpA][hpB]
+        + aActivationsAfterBHit;
+      bActivationsFromA[hpA][hpB] = (
+        hitsA[0] * (1 + bActivationsAfterBHit)
+        + bActivationsAfterAHit
+      ) / denominator;
+      bActivationsFromB[hpA][hpB] = 1
+        + hitsB[0] * bActivationsFromA[hpA][hpB]
+        + bActivationsAfterBHit;
     }
   }
 
@@ -453,6 +541,10 @@ function getMatchup(a, b) {
   const chanceAOverall = Math.min(1, Math.max(0, (chanceAWhenFirst + chanceAWhenSecond) / 2));
   const chanceBOverall = 1 - chanceAOverall;
   const shareA = chanceAOverall * 100;
+  const battleTurns = (battleTurnsFromA[a.hp][b.hp] + battleTurnsFromB[a.hp][b.hp]) / 2;
+  const battleRounds = (aActivationsFromA[a.hp][b.hp] + bActivationsFromB[a.hp][b.hp]) / 2;
+  const soloTurnsA = expectedAttackTurnsToKill(hitsA, b.hp);
+  const soloTurnsB = expectedAttackTurnsToKill(hitsB, a.hp);
   const weightedTurnsA = (
     aVictoryTurnsFromA[a.hp][b.hp] + aVictoryTurnsFromB[a.hp][b.hp]
   ) / 2;
@@ -478,8 +570,8 @@ function getMatchup(a, b) {
     b,
     hitChanceA: chanceA,
     hitChanceB: chanceB,
-    expectedHitsA: a.strike * chanceA,
-    expectedHitsB: b.strike * chanceB,
+    expectedHitsA: a.strike * chanceA / (1 - 1 / 6),
+    expectedHitsB: b.strike * chanceB / (1 - 1 / 6),
     chanceAWhenFirst,
     chanceAWhenSecond,
     shareA,
@@ -487,6 +579,10 @@ function getMatchup(a, b) {
     victoryTurnsB,
     victoryHpA,
     victoryHpB,
+    battleTurns,
+    battleRounds,
+    soloTurnsA,
+    soloTurnsB,
     winner: shareA > 50.000001 ? "a" : shareA < 49.999999 ? "b" : "even"
   };
 
@@ -495,8 +591,8 @@ function getMatchup(a, b) {
     b: a,
     hitChanceA: chanceB,
     hitChanceB: chanceA,
-    expectedHitsA: b.strike * chanceB,
-    expectedHitsB: a.strike * chanceA,
+    expectedHitsA: b.strike * chanceB / (1 - 1 / 6),
+    expectedHitsB: a.strike * chanceA / (1 - 1 / 6),
     chanceAWhenFirst: 1 - chanceAWhenSecond,
     chanceAWhenSecond: 1 - chanceAWhenFirst,
     shareA: 100 - shareA,
@@ -504,6 +600,10 @@ function getMatchup(a, b) {
     victoryTurnsB: victoryTurnsA,
     victoryHpA: victoryHpB,
     victoryHpB: victoryHpA,
+    battleTurns,
+    battleRounds,
+    soloTurnsA: soloTurnsB,
+    soloTurnsB: soloTurnsA,
     winner: shareA < 49.999999 ? "a" : shareA > 50.000001 ? "b" : "even"
   };
 
@@ -517,7 +617,7 @@ function hitTarget(attacker, defender) {
 }
 
 function matchupTitle(matchup) {
-  return `${matchup.a.name}: ${matchup.a.strike} dice hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per strike. When it wins: ${formatMetric(matchup.victoryTurnsA)} attack turns and ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchup.b.strike} dice hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per strike. When it wins: ${formatMetric(matchup.victoryTurnsB)} attack turns and ${formatMetric(matchup.victoryHpB)} HP remaining. All values average both possible starting orders.`;
+  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds. ${matchup.a.name}: ${matchup.a.strike} dice hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchup.b.strike} dice hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. Battle values average both possible attack orders.`;
 }
 
 function comparisonsFor(unit) {
@@ -551,7 +651,7 @@ function victoryDetails(matchup) {
   const useA = matchup.winner !== "b";
   return {
     unit: useA ? matchup.a : matchup.b,
-    turns: useA ? matchup.victoryTurnsA : matchup.victoryTurnsB,
+    rounds: matchup.battleRounds,
     hp: useA ? matchup.victoryHpA : matchup.victoryHpB,
     isEven: matchup.winner === "even"
   };
@@ -627,10 +727,10 @@ function renderBars() {
 
       const facts = createElement("span", "victory-facts");
       const turns = createElement("span", "victory-metric");
-      turns.title = `Expected attack turns for ${victory.unit.name} to win`;
+      turns.title = "Expected rounds until either unit dies";
       turns.append(
         createElement("i", "turn-icon", "◷"),
-        createElement("b", "", `${formatMetric(victory.turns)} turns`)
+        createElement("b", "", `${formatMetric(victory.rounds)} rounds`)
       );
       const hp = createElement("span", "victory-metric hp-metric");
       hp.title = `Expected HP remaining when ${victory.unit.name} wins`;
@@ -672,51 +772,434 @@ function mixColours(baseHex, colourHex, amount) {
   return `rgb(${mix("r")}, ${mix("g")}, ${mix("b")})`;
 }
 
+function semanticMatrixColour(share) {
+  const neutral = hexToRgb("#eeece5");
+  const endpoint = hexToRgb(share >= 50 ? "#187659" : "#824a7a");
+  const amount = Math.pow(Math.min(1, Math.abs(share - 50) / 35), .75);
+  const channel = name => Math.round(neutral[name] + (endpoint[name] - neutral[name]) * amount);
+  const rgb = { r: channel("r"), g: channel("g"), b: channel("b") };
+  const luminance = (rgb.r * .2126 + rgb.g * .7152 + rgb.b * .0722) / 255;
+  return {
+    background: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+    foreground: luminance < .52 ? "#ffffff" : "#202521"
+  };
+}
+
+function strengthEntries() {
+  return shownUnits.map((unit, index) => {
+    const matchups = shownUnits
+      .filter(opponent => opponent.id !== unit.id)
+      .map(opponent => getMatchup(unit, opponent));
+    return {
+      unit,
+      index,
+      average: averageShare(matchups),
+      wins: matchups.filter(matchup => matchup.shareA > 50).length
+    };
+  });
+}
+
+function matrixUnitOrder() {
+  if (matrixSort === "roster" || shownUnits.length < 3) return [...shownUnits];
+  const entries = strengthEntries();
+  const entryById = new Map(entries.map(entry => [entry.unit.id, entry]));
+  const strengthOrder = [...entries].sort((a, b) =>
+    b.average - a.average || b.wins - a.wins || a.index - b.index
+  );
+  if (matrixSort === "strength") return strengthOrder.map(entry => entry.unit);
+
+  const distanceCache = new Map();
+  const distance = (a, b) => {
+    const key = [a.id, b.id].sort().join("|");
+    if (distanceCache.has(key)) return distanceCache.get(key);
+    const common = shownUnits.filter(unit => unit.id !== a.id && unit.id !== b.id);
+    if (!common.length) return 0;
+    const sum = common.reduce((total, opponent) => {
+      const difference = (getMatchup(a, opponent).shareA - getMatchup(b, opponent).shareA) / 50;
+      return total + difference * difference;
+    }, 0);
+    const value = Math.sqrt(sum / common.length);
+    distanceCache.set(key, value);
+    return value;
+  };
+  const pathCost = path => path.slice(1).reduce(
+    (total, unit, index) => total + distance(path[index], unit),
+    0
+  );
+  const improvePath = original => {
+    let path = [...original];
+    let improved = true;
+    while (improved) {
+      improved = false;
+      const currentCost = pathCost(path);
+      for (let start = 0; start < path.length - 1 && !improved; start += 1) {
+        for (let end = start + 1; end < path.length; end += 1) {
+          const candidate = [
+            ...path.slice(0, start),
+            ...path.slice(start, end + 1).reverse(),
+            ...path.slice(end + 1)
+          ];
+          if (pathCost(candidate) < currentCost - 1e-9) {
+            path = candidate;
+            improved = true;
+            break;
+          }
+        }
+      }
+    }
+    return path;
+  };
+
+  let bestPath = null;
+  let bestCost = Infinity;
+  shownUnits.forEach(firstUnit => {
+    const path = [firstUnit];
+    const remaining = shownUnits.filter(unit => unit.id !== firstUnit.id);
+    while (remaining.length) {
+      const last = path[path.length - 1];
+      remaining.sort((a, b) => {
+        const difference = distance(last, a) - distance(last, b);
+        if (Math.abs(difference) > 1e-9) return difference;
+        const aEntry = entryById.get(a.id);
+        const bEntry = entryById.get(b.id);
+        return bEntry.average - aEntry.average || aEntry.index - bEntry.index;
+      });
+      path.push(remaining.shift());
+    }
+    const improved = improvePath(path);
+    const firstEntry = entryById.get(improved[0].id);
+    const lastEntry = entryById.get(improved[improved.length - 1].id);
+    if (lastEntry.average > firstEntry.average + 1e-9) improved.reverse();
+    const cost = pathCost(improved);
+    if (cost < bestCost - 1e-9) {
+      bestPath = improved;
+      bestCost = cost;
+    }
+  });
+  return bestPath || strengthOrder.map(entry => entry.unit);
+}
+
 function renderMatrix() {
   const view = createElement("div", "matrix-view");
-  const grid = createElement("div", "matrix-grid");
-  grid.style.setProperty("--unit-total", shownUnits.length);
-  grid.append(createElement("div", "matrix-corner", "Row unit's result"));
+  const toolbar = createElement("div", "visual-toolbar matrix-toolbar");
+  const sortControl = createElement("div", "mini-switcher");
+  [
+    ["roster", "Roster"],
+    ["strength", "Strength"],
+    ["similar", "Similar matchups"]
+  ].forEach(([value, label]) => {
+    const button = createElement("button", matrixSort === value ? "active" : "", label);
+    button.type = "button";
+    button.title = value === "strength"
+      ? "Order by average win chance against the current roster"
+      : value === "similar"
+        ? "Place units with similar matchup patterns together"
+        : "Use your manually arranged roster order";
+    button.addEventListener("click", () => {
+      matrixSort = value;
+      localStorage.setItem(MATRIX_SORT_KEY, matrixSort);
+      renderMatrix();
+    });
+    sortControl.append(button);
+  });
+  toolbar.append(
+    createElement("span", "visual-toolbar-label", "Order"),
+    sortControl,
+    createElement("span", "visual-toolbar-note", "Cell: row win chance · expected rounds")
+  );
 
-  shownUnits.forEach(unit => {
-    const column = createElement("div", "matrix-column", unit.name);
+  const matrixUnits = matrixUnitOrder();
+  const strengths = new Map(strengthEntries().map(entry => [entry.unit.id, entry.average]));
+  const grid = createElement("div", "matrix-grid");
+  grid.style.setProperty("--unit-total", matrixUnits.length);
+  grid.classList.toggle("dense", matrixUnits.length > 8);
+  grid.append(createElement("div", "matrix-corner", "Row win %"));
+
+  matrixUnits.forEach(unit => {
+    const column = createElement("div", "matrix-column");
+    column.append(createElement("span", "", unit.name));
     column.title = unit.name;
     grid.append(column);
   });
 
-  shownUnits.forEach(rowUnit => {
+  matrixUnits.forEach(rowUnit => {
     const rowHead = createElement("div", "matrix-row");
-    rowHead.append(...createUnitHeading(rowUnit).childNodes);
+    rowHead.append(
+      createUnitHeading(rowUnit),
+      createElement("span", "matrix-row-score", `${Math.round(strengths.get(rowUnit.id))}`)
+    );
     grid.append(rowHead);
 
-    shownUnits.forEach(opponent => {
+    matrixUnits.forEach(opponent => {
       if (rowUnit.id === opponent.id) {
         grid.append(createElement("div", "matrix-cell diagonal", "—"));
         return;
       }
 
       const matchup = getMatchup(rowUnit, opponent);
-      const cell = createElement("div", "matrix-cell", `${Math.round(matchup.shareA)}%`);
-      const winnerColour = matchup.shareA >= 50 ? rowUnit.color : opponent.color;
-      const intensity = .16 + Math.abs(matchup.shareA - 50) / 50 * .58;
-      cell.style.background = matchup.winner === "even"
-        ? "#e7e6df"
-        : mixColours("#f2f1eb", winnerColour, intensity);
-      cell.style.setProperty("--row-color", rowUnit.color);
-      cell.style.setProperty("--opponent-color", opponent.color);
+      const cell = createElement("div", "matrix-cell");
+      cell.append(
+        createElement("strong", "matrix-cell-chance", `${Math.round(matchup.shareA)}%`),
+        createElement("span", "matrix-cell-rounds", `◷ ${formatMetric(matchup.battleRounds)}r`)
+      );
+      const colour = semanticMatrixColour(matchup.shareA);
+      cell.style.background = colour.background;
+      cell.style.color = colour.foreground;
+      cell.style.setProperty("--row-color", "#187659");
+      cell.style.setProperty("--opponent-color", "#824a7a");
       cell.style.setProperty("--share", `${matchup.shareA}%`);
       cell.title = matchupTitle(matchup);
+      cell.setAttribute("role", "img");
+      cell.setAttribute("aria-label", `${rowUnit.name} has a ${Math.round(matchup.shareA)} percent chance to beat ${opponent.name}`);
       grid.append(cell);
     });
   });
 
   const legend = createElement("div", "matrix-legend");
   legend.append(
-    createElement("span", "", "Opponent favoured"),
+    createElement("span", "", "Column favoured · 0%"),
     createElement("span", "legend-gradient"),
-    createElement("span", "", "Row unit favoured")
+    createElement("span", "", "100% · Row favoured")
   );
-  view.append(grid, legend);
+  view.append(toolbar, grid, legend);
+  resultStage.replaceChildren(view);
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function createSvgElement(tag, attributes = {}, text) {
+  const node = document.createElementNS(SVG_NS, tag);
+  Object.entries(attributes).forEach(([name, value]) => node.setAttribute(name, value));
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function renderCounters() {
+  const view = createElement("div", "counter-view");
+  const toolbar = createElement("div", "visual-toolbar counter-toolbar");
+  const thresholdControl = createElement("div", "mini-switcher");
+  [60, 65, 70, 75, 80].forEach(value => {
+    const button = createElement("button", counterThreshold === value ? "active" : "", `${value}%+`);
+    button.type = "button";
+    button.title = `Only show matchups where the winner has at least ${value}% win chance`;
+    button.addEventListener("click", () => {
+      counterThreshold = value;
+      localStorage.setItem(COUNTER_THRESHOLD_KEY, String(counterThreshold));
+      renderCounters();
+    });
+    thresholdControl.append(button);
+  });
+  toolbar.append(
+    createElement("span", "visual-toolbar-label", "Show edges at"),
+    thresholdControl,
+    createElement("span", "visual-toolbar-note", "Arrow: winner → unit it beats")
+  );
+
+  const edges = [];
+  for (let first = 0; first < shownUnits.length; first += 1) {
+    for (let second = first + 1; second < shownUnits.length; second += 1) {
+      const a = shownUnits[first];
+      const b = shownUnits[second];
+      const matchup = getMatchup(a, b);
+      if (matchup.shareA >= counterThreshold) {
+        edges.push({ winner: a, loser: b, share: matchup.shareA, matchup, first, second });
+      } else if (matchup.shareA <= 100 - counterThreshold) {
+        edges.push({ winner: b, loser: a, share: 100 - matchup.shareA, matchup, first, second });
+      }
+    }
+  }
+
+  const summary = createElement(
+    "div",
+    "counter-summary",
+    `${edges.length} decisive matchup${edges.length === 1 ? "" : "s"} at ${counterThreshold}%+`
+  );
+  if (edges.length > 36) summary.append(createElement("span", "", " · Raise the threshold to simplify"));
+
+  const svg = createSvgElement("svg", {
+    class: "counter-map",
+    viewBox: "0 0 1000 560",
+    role: "img",
+    tabindex: "0",
+    "aria-label": `Counter map showing ${edges.length} matchups at ${counterThreshold} percent or higher. Arrows point from the favoured winner to the unit it beats.`
+  });
+  svg.append(
+    createSvgElement("title", {}, "Decisive counter map"),
+    createSvgElement("desc", {}, "Arrows point from the favoured winner to the unit it beats. Thicker arrows indicate more decisive matchups.")
+  );
+
+  const definitions = createSvgElement("defs");
+  shownUnits.forEach((unit, index) => {
+    const marker = createSvgElement("marker", {
+      id: `counter-arrow-${index}`,
+      viewBox: "0 0 8 8",
+      refX: "7",
+      refY: "4",
+      markerWidth: "7",
+      markerHeight: "7",
+      orient: "auto-start-reverse"
+    });
+    marker.append(createSvgElement("path", { d: "M0 0 8 4 0 8Z", fill: unit.color }));
+    definitions.append(marker);
+  });
+  svg.append(definitions);
+
+  const centreX = 500;
+  const centreY = 280;
+  const radiusX = 390;
+  const radiusY = 210;
+  const nodeWidth = 112;
+  const nodeHeight = 28;
+  const positions = new Map(shownUnits.map((unit, index) => {
+    const angle = -Math.PI / 2 + Math.PI * 2 * index / shownUnits.length;
+    return [unit.id, {
+      x: centreX + Math.cos(angle) * radiusX,
+      y: centreY + Math.sin(angle) * radiusY,
+      index
+    }];
+  }));
+
+  const edgeLayer = createSvgElement("g", { class: "counter-edge-layer" });
+  edges.forEach(edge => {
+    const source = positions.get(edge.winner.id);
+    const target = positions.get(edge.loser.id);
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const length = Math.hypot(dx, dy);
+    const startScale = Math.min((nodeWidth / 2 + 3) / Math.abs(dx || 1), (nodeHeight / 2 + 3) / Math.abs(dy || 1));
+    const endScale = startScale;
+    const start = { x: source.x + dx * startScale, y: source.y + dy * startScale };
+    const end = { x: target.x - dx * endScale, y: target.y - dy * endScale };
+    const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+    const bow = Math.min(32, 10 + length * .035) * ((edge.first + edge.second) % 2 ? 1 : -1);
+    const control = {
+      x: midpoint.x - dy / length * bow,
+      y: midpoint.y + dx / length * bow
+    };
+    const pathData = `M${start.x.toFixed(1)} ${start.y.toFixed(1)} Q${control.x.toFixed(1)} ${control.y.toFixed(1)} ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    const strength = (edge.share - counterThreshold) / (100 - counterThreshold);
+    const group = createSvgElement("g", {
+      class: "counter-edge",
+      "data-source": edge.winner.id,
+      "data-target": edge.loser.id
+    });
+    const title = `${edge.winner.name} beats ${edge.loser.name}: ${Math.round(edge.share)}%. ${formatMetric(edge.matchup.battleRounds)} expected rounds.`;
+    group.append(createSvgElement("title", {}, title));
+    group.append(createSvgElement("path", {
+      class: "counter-edge-hit",
+      d: pathData
+    }));
+    group.append(createSvgElement("path", {
+      class: "counter-edge-line",
+      d: pathData,
+      stroke: edge.winner.color,
+      "stroke-width": (1.25 + strength * 2.75).toFixed(2),
+      opacity: (.28 + strength * .52).toFixed(2),
+      "marker-end": `url(#counter-arrow-${source.index})`
+    }));
+    const label = createSvgElement("text", {
+      class: "counter-edge-label",
+      x: control.x.toFixed(1),
+      y: (control.y - 4).toFixed(1),
+      "text-anchor": "middle"
+    }, `${Math.round(edge.share)}%`);
+    group.append(label);
+    edgeLayer.append(group);
+  });
+  svg.append(edgeLayer);
+
+  const detail = createElement("div", "counter-detail", "Hover, focus, or click a unit to isolate its decisive matchups.");
+  const nodeLayer = createSvgElement("g", { class: "counter-node-layer" });
+  let pinnedUnitId = null;
+  const applyFocus = unitId => {
+    const connected = new Set(unitId ? [unitId] : []);
+    svg.querySelectorAll(".counter-edge").forEach(edgeNode => {
+      const related = unitId && (edgeNode.dataset.source === unitId || edgeNode.dataset.target === unitId);
+      edgeNode.classList.toggle("highlighted", Boolean(related));
+      edgeNode.classList.toggle("dimmed", Boolean(unitId && !related));
+      if (related) {
+        connected.add(edgeNode.dataset.source);
+        connected.add(edgeNode.dataset.target);
+      }
+    });
+    svg.querySelectorAll(".counter-node").forEach(node => {
+      node.classList.toggle("dimmed", Boolean(unitId && !connected.has(node.dataset.unitId)));
+    });
+    if (!unitId) {
+      detail.textContent = "Hover, focus, or click a unit to isolate its decisive matchups.";
+      return;
+    }
+    const unit = shownUnits.find(item => item.id === unitId);
+    const wins = edges.filter(edge => edge.winner.id === unitId).map(edge => edge.loser.name);
+    const losses = edges.filter(edge => edge.loser.id === unitId).map(edge => edge.winner.name);
+    detail.textContent = `${unit.name} beats: ${wins.join(", ") || "none"} · Loses to: ${losses.join(", ") || "none"}`;
+  };
+
+  shownUnits.forEach(unit => {
+    const position = positions.get(unit.id);
+    const wins = edges.filter(edge => edge.winner.id === unit.id).length;
+    const losses = edges.filter(edge => edge.loser.id === unit.id).length;
+    const node = createSvgElement("g", {
+      class: "counter-node",
+      transform: `translate(${position.x.toFixed(1)} ${position.y.toFixed(1)})`,
+      tabindex: "0",
+      role: "button",
+      "data-unit-id": unit.id,
+      "aria-label": `${unit.name}: ${wins} decisive wins and ${losses} decisive losses`
+    });
+    node.append(
+      createSvgElement("rect", {
+        x: String(-nodeWidth / 2),
+        y: String(-nodeHeight / 2),
+        width: String(nodeWidth),
+        height: String(nodeHeight),
+        rx: "14",
+        fill: "#fbfaf6",
+        stroke: unit.color,
+        "stroke-width": "2"
+      }),
+      createSvgElement("circle", { cx: "-43", cy: "0", r: "4", fill: unit.color }),
+      createSvgElement("text", { x: "-34", y: "3.5" }, unit.name.length > 14 ? `${unit.name.slice(0, 13)}…` : unit.name),
+      createSvgElement("title", {}, unit.name)
+    );
+    node.addEventListener("mouseenter", () => { if (!pinnedUnitId) applyFocus(unit.id); });
+    node.addEventListener("mouseleave", () => { if (!pinnedUnitId) applyFocus(null); });
+    node.addEventListener("focus", () => applyFocus(unit.id));
+    node.addEventListener("blur", () => { if (!pinnedUnitId) applyFocus(null); });
+    node.addEventListener("click", event => {
+      event.stopPropagation();
+      pinnedUnitId = pinnedUnitId === unit.id ? null : unit.id;
+      applyFocus(pinnedUnitId);
+    });
+    nodeLayer.append(node);
+  });
+  svg.append(nodeLayer);
+
+  if (!edges.length) {
+    svg.append(createSvgElement("text", {
+      class: "counter-empty",
+      x: "500",
+      y: "284",
+      "text-anchor": "middle"
+    }, `No matchups reach ${counterThreshold}% — lower the threshold.`));
+  }
+  svg.addEventListener("click", () => {
+    pinnedUnitId = null;
+    applyFocus(null);
+  });
+  svg.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      pinnedUnitId = null;
+      applyFocus(null);
+      svg.focus();
+    }
+  });
+
+  const accessibleList = createElement("ul", "sr-only");
+  edges.forEach(edge => {
+    accessibleList.append(createElement("li", "", `${edge.winner.name} beats ${edge.loser.name}, ${Math.round(edge.share)} percent`));
+  });
+  view.append(toolbar, summary, svg, detail, accessibleList);
   resultStage.replaceChildren(view);
 }
 
@@ -791,6 +1274,7 @@ function renderProfile() {
 function renderResults() {
   const matchupCount = shownUnits.length * (shownUnits.length - 1);
   resultsMeta.textContent = `${shownUnits.length} units · ${matchupCount} displayed matchups`;
+  outcomeKey.hidden = activeView !== "bars";
 
   viewButtons.forEach(button => {
     const selected = button.dataset.view === activeView;
@@ -799,6 +1283,7 @@ function renderResults() {
   });
 
   if (activeView === "matrix") renderMatrix();
+  else if (activeView === "counters") renderCounters();
   else if (activeView === "profile") renderProfile();
   else renderBars();
 }
