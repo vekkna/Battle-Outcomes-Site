@@ -5,8 +5,8 @@ const MIN_UNITS = 2;
 const PALETTE = ["#c95f4b", "#597fb3", "#d49a38", "#64865a", "#8b68a5", "#3e9a96"];
 
 const DEFAULT_UNITS = [
-  { id: "heavy-infantry", name: "Heavy Infantry", strike: 6, ap: false, defense: 7, hp: 7, color: "#c95f4b" },
-  { id: "spearmen", name: "Spearmen", strike: 5, ap: true, defense: 5, hp: 7, color: "#597fb3" },
+  { id: "heavy-infantry", name: "Heavy Infantry", strike: 6, ap: false, defense: 5, hp: 7, color: "#c95f4b" },
+  { id: "spearmen", name: "Spearmen", strike: 5, ap: false, defense: 5, hp: 7, color: "#597fb3" },
   { id: "skirmishers", name: "Skirmishers", strike: 4, ap: false, defense: 3, hp: 7, color: "#d49a38" },
   { id: "cavalry", name: "Cavalry", strike: 7, ap: false, defense: 4, hp: 7, color: "#64865a" }
 ];
@@ -26,6 +26,7 @@ let units = loadUnits();
 let shownUnits = cloneUnits(units);
 let activeView = loadView();
 let isDirty = false;
+let matchupCache = new Map();
 
 function cloneUnits(value) {
   return value.map(unit => ({ ...unit }));
@@ -41,9 +42,9 @@ function sanitiseUnits(value) {
   return value.slice(0, MAX_UNITS).map((unit, index) => ({
     id: String(unit.id || `unit-${Date.now()}-${index}`),
     name: String(unit.name || "").trim().slice(0, 24) || `Unit ${index + 1}`,
-    strike: safeNumber(unit.strike, 1, 0, 99),
+    strike: safeNumber(unit.strike, 1, 1, 99),
     ap: Boolean(unit.ap),
-    defense: safeNumber(unit.defense, 0, 0, 99),
+    defense: safeNumber(unit.defense, 4, 1, 6),
     hp: safeNumber(unit.hp, 7, 1, 99),
     color: /^#[0-9a-f]{6}$/i.test(unit.color) ? unit.color : PALETTE[index % PALETTE.length]
   }));
@@ -76,7 +77,7 @@ function setDirty(value) {
   isDirty = value;
   showButton.classList.toggle("pending", value);
   saveState.classList.toggle("pending", value);
-  saveState.lastChild.textContent = value ? "Changes ready" : "Saved locally";
+  saveState.lastChild.textContent = value ? "Saved · click Show" : "Saved locally";
 }
 
 function renderEditor() {
@@ -111,69 +112,105 @@ function renderEditor() {
   addUnitButton.disabled = units.length >= MAX_UNITS;
 }
 
-function damagePerStrike(attacker, defender) {
-  const blocked = attacker.ap ? 0 : defender.defense;
-  return Math.max(1, attacker.strike - blocked);
+function hitChance(attacker, defender) {
+  if (attacker.ap) return 4 / 6;
+  return (7 - defender.defense) / 6;
+}
+
+function binomialDistribution(dice, chance) {
+  const distribution = new Float64Array(dice + 1);
+
+  if (chance === 1) {
+    distribution[dice] = 1;
+    return distribution;
+  }
+
+  const missChance = 1 - chance;
+  distribution[0] = missChance ** dice;
+  for (let hits = 1; hits <= dice; hits += 1) {
+    distribution[hits] = distribution[hits - 1]
+      * ((dice - hits + 1) / hits)
+      * (chance / missChance);
+  }
+  return distribution;
+}
+
+function matchupKey(a, b) {
+  const unitKey = unit => [unit.id, unit.strike, unit.ap ? 1 : 0, unit.defense, unit.hp].join(":");
+  return `${unitKey(a)}|${unitKey(b)}`;
 }
 
 function getMatchup(a, b) {
-  const damageA = damagePerStrike(a, b);
-  const damageB = damagePerStrike(b, a);
-  const turnsA = Math.ceil(b.hp / damageA);
-  const turnsB = Math.ceil(a.hp / damageB);
+  const key = matchupKey(a, b);
+  const cached = matchupCache.get(key);
+  if (cached) return cached;
 
-  if (turnsA === turnsB) {
-    return {
-      a,
-      b,
-      damageA,
-      damageB,
-      turnsA,
-      turnsB,
-      shareA: 50,
-      winner: "initiative",
-      survivorFraction: 0
-    };
+  const chanceA = hitChance(a, b);
+  const chanceB = hitChance(b, a);
+  const hitsA = binomialDistribution(a.strike, chanceA);
+  const hitsB = binomialDistribution(b.strike, chanceB);
+  const aFirst = Array.from({ length: a.hp + 1 }, () => new Float64Array(b.hp + 1));
+  const bFirst = Array.from({ length: a.hp + 1 }, () => new Float64Array(b.hp + 1));
+
+  for (let hpA = 1; hpA <= a.hp; hpA += 1) {
+    for (let hpB = 1; hpB <= b.hp; hpB += 1) {
+      let aPositiveResult = 0;
+      for (let hits = 1; hits < hitsA.length; hits += 1) {
+        if (hits >= hpB) aPositiveResult += hitsA[hits];
+        else aPositiveResult += hitsA[hits] * bFirst[hpA][hpB - hits];
+      }
+
+      let bPositiveResult = 0;
+      for (let hits = 1; hits < hitsB.length && hits < hpA; hits += 1) {
+        bPositiveResult += hitsB[hits] * aFirst[hpA - hits][hpB];
+      }
+
+      const denominator = 1 - hitsA[0] * hitsB[0];
+      aFirst[hpA][hpB] = (aPositiveResult + hitsA[0] * bPositiveResult) / denominator;
+      bFirst[hpA][hpB] = bPositiveResult + hitsB[0] * aFirst[hpA][hpB];
+    }
   }
 
-  if (turnsA < turnsB) {
-    const hpWhenFirst = a.hp - Math.max(0, turnsA - 1) * damageB;
-    const hpWhenSecond = a.hp - turnsA * damageB;
-    const survivorFraction = Math.max(0, (hpWhenFirst + hpWhenSecond) / 2 / a.hp);
-    return {
-      a,
-      b,
-      damageA,
-      damageB,
-      turnsA,
-      turnsB,
-      shareA: 50 + survivorFraction * 50,
-      winner: "a",
-      survivorFraction
-    };
-  }
-
-  const hpWhenFirst = b.hp - Math.max(0, turnsB - 1) * damageA;
-  const hpWhenSecond = b.hp - turnsB * damageA;
-  const survivorFraction = Math.max(0, (hpWhenFirst + hpWhenSecond) / 2 / b.hp);
-  return {
+  const chanceAWhenFirst = aFirst[a.hp][b.hp];
+  const chanceAWhenSecond = bFirst[a.hp][b.hp];
+  const shareA = (chanceAWhenFirst + chanceAWhenSecond) * 50;
+  const result = {
     a,
     b,
-    damageA,
-    damageB,
-    turnsA,
-    turnsB,
-    shareA: 50 - survivorFraction * 50,
-    winner: "b",
-    survivorFraction
+    hitChanceA: chanceA,
+    hitChanceB: chanceB,
+    expectedHitsA: a.strike * chanceA,
+    expectedHitsB: b.strike * chanceB,
+    chanceAWhenFirst,
+    chanceAWhenSecond,
+    shareA,
+    winner: shareA > 50.000001 ? "a" : shareA < 49.999999 ? "b" : "even"
   };
+
+  const reverse = {
+    a: b,
+    b: a,
+    hitChanceA: chanceB,
+    hitChanceB: chanceA,
+    expectedHitsA: b.strike * chanceB,
+    expectedHitsB: a.strike * chanceA,
+    chanceAWhenFirst: 1 - chanceAWhenSecond,
+    chanceAWhenSecond: 1 - chanceAWhenFirst,
+    shareA: 100 - shareA,
+    winner: shareA < 49.999999 ? "a" : shareA > 50.000001 ? "b" : "even"
+  };
+
+  matchupCache.set(key, result);
+  matchupCache.set(matchupKey(b, a), reverse);
+  return result;
+}
+
+function hitTarget(attacker, defender) {
+  return attacker.ap ? "3+ (AP)" : `${defender.defense}+`;
 }
 
 function matchupTitle(matchup) {
-  const initiative = matchup.winner === "initiative"
-    ? " Same turns-to-kill: whichever unit strikes first wins."
-    : "";
-  return `${matchup.a.name}: ${matchup.damageA} damage, ${matchup.turnsA} strike${matchup.turnsA === 1 ? "" : "s"} to kill. ${matchup.b.name}: ${matchup.damageB} damage, ${matchup.turnsB} strike${matchup.turnsB === 1 ? "" : "s"} to kill.${initiative}`;
+  return `${matchup.a.name}: ${matchup.a.strike} dice hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per strike. ${matchup.b.name}: ${matchup.b.strike} dice hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per strike. Win chance averages both possible starting orders.`;
 }
 
 function comparisonsFor(unit) {
@@ -202,7 +239,6 @@ function createUnitHeading(unit) {
 }
 
 function shareLabel(matchup) {
-  if (matchup.winner === "initiative") return "1st strike";
   return `${Math.round(matchup.shareA)}%`;
 }
 
@@ -290,10 +326,10 @@ function renderMatrix() {
       }
 
       const matchup = getMatchup(rowUnit, opponent);
-      const cell = createElement("div", "matrix-cell", matchup.winner === "initiative" ? "1st" : `${Math.round(matchup.shareA)}%`);
+      const cell = createElement("div", "matrix-cell", `${Math.round(matchup.shareA)}%`);
       const winnerColour = matchup.shareA >= 50 ? rowUnit.color : opponent.color;
       const intensity = .16 + Math.abs(matchup.shareA - 50) / 50 * .58;
-      cell.style.background = matchup.winner === "initiative"
+      cell.style.background = matchup.winner === "even"
         ? "#e7e6df"
         : mixColours("#f2f1eb", winnerColour, intensity);
       cell.style.setProperty("--row-color", rowUnit.color);
@@ -374,7 +410,7 @@ function renderProfile() {
   const scale = createElement("div", "axis-scale");
   scale.append(
     createElement("span", "", "0 · opponent"),
-    createElement("span", "", "50 · initiative"),
+    createElement("span", "", "50 · even"),
     createElement("span", "", "100 · unit")
   );
   axis.append(createElement("span"), scale, createElement("span"));
@@ -459,6 +495,7 @@ addUnitButton.addEventListener("click", () => {
 showButton.addEventListener("click", () => {
   units = sanitiseUnits(units);
   shownUnits = cloneUnits(units);
+  matchupCache.clear();
   saveUnits();
   renderEditor();
   renderResults();
@@ -472,6 +509,7 @@ resetButton.addEventListener("click", () => {
   if (!window.confirm("Restore the four example units?")) return;
   units = cloneUnits(DEFAULT_UNITS);
   shownUnits = cloneUnits(DEFAULT_UNITS);
+  matchupCache.clear();
   saveUnits();
   renderEditor();
   renderResults();
@@ -489,3 +527,5 @@ viewButtons.forEach(button => {
 renderEditor();
 renderResults();
 setDirty(false);
+saveUnits();
+window.addEventListener("beforeunload", saveUnits);

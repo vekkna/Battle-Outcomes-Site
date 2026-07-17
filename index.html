@@ -34,8 +34,8 @@
             <h1 id="rosterTitle">Units</h1>
             <span class="unit-count" id="unitCount">4 / 6</span>
           </div>
-          <div class="rules-note" title="Normal damage is Strike minus Defence, with a minimum of 1. Armour piercing ignores Defence.">
-            <span>Damage</span> = STR − DEF <i></i> AP ignores DEF <i></i> first strike unknown
+          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+.">
+            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> first strike unknown
           </div>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
@@ -86,10 +86,10 @@
         </button>
       </div>
       <div class="stats-row">
-        <label class="stat-control"><span>STR</span><input type="number" min="0" max="99" inputmode="numeric" data-field="strike"></label>
-        <label class="stat-control"><span>DEF</span><input type="number" min="0" max="99" inputmode="numeric" data-field="defense"></label>
-        <label class="stat-control hp-control"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
-        <label class="ap-control">
+        <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
+        <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
+        <label class="stat-control hp-control" title="Hits required to kill this unit"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
+        <label class="ap-control" title="This unit hits on 3+ regardless of its target's Defence">
           <input type="checkbox" data-field="ap">
           <span class="ap-toggle" aria-hidden="true"></span>
           <span>AP</span>
