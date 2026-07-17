@@ -20,10 +20,6 @@
         <button class="button button-quiet" id="resetButton" type="button" title="Restore the example units">
           Reset
         </button>
-        <button class="button button-primary" id="showButton" type="button">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5.2 3.1 7 4.4a.6.6 0 0 1 0 1l-7 4.4a.6.6 0 0 1-.9-.5V3.6a.6.6 0 0 1 .9-.5Z"/></svg>
-          <span>Show</span>
-        </button>
       </div>
     </header>
 
@@ -32,7 +28,7 @@
         <div class="section-bar">
           <div class="section-title-wrap">
             <h1 id="rosterTitle">Units</h1>
-            <span class="unit-count" id="unitCount">4 / 6</span>
+            <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
           <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+.">
             <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> first strike unknown
@@ -49,6 +45,10 @@
           <div class="results-heading">
             <h2 id="resultsTitle">Outcomes</h2>
             <span id="resultsMeta">4 units · 12 matchups</span>
+          </div>
+          <div class="outcome-key" aria-label="Matchup details key">
+            <span><i aria-hidden="true">◷</i> winner's attack turns</span>
+            <span><i class="heart-key" aria-hidden="true">♥</i> winner's HP</span>
           </div>
           <div class="view-switcher" role="tablist" aria-label="Visualisation">
             <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="bars">
@@ -73,6 +73,7 @@
   <template id="unitCardTemplate">
     <article class="unit-card">
       <div class="unit-card-top">
+        <button class="drag-handle" type="button" data-action="drag" data-drag-scope="card" title="Drag to reorder" aria-label="Drag to reorder unit">⠿</button>
         <label class="colour-control" title="Unit colour">
           <span class="sr-only">Unit colour</span>
           <input type="color" data-field="color">
