@@ -1,4 +1,6 @@
 const STORAGE_KEY = "matchup-board-units-v1";
+const STORAGE_COOKIE = "matchup-board-units-v1";
+const RECOVERY_KEY = "matchup-board-roster-recovered-2026-07-18";
 const VIEW_KEY = "matchup-board-view-v2";
 const MATCHUP_ORDER_KEY = "matchup-board-matchup-orders-v1";
 const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
@@ -14,6 +16,21 @@ const DEFAULT_UNITS = [
   { id: "cavalry", name: "Cavalry", strike: 7, ap: false, defense: 4, hp: 7, color: "#64865a" }
 ];
 
+// Recovered from the previous preview origin (http://127.0.0.1:53788).
+// This is used once when the current origin only has the example roster.
+const RECOVERED_UNITS = [
+  { id: "skirmishers", name: "Light Infantry", strike: 6, ap: false, defense: 5, hp: 7, color: "#c95f4b" },
+  { id: "spearmen", name: "Spearmen", strike: 5, ap: false, defense: 5, hp: 7, color: "#597fb3" },
+  { id: "heavy-infantry", name: "Heavy Infantry", strike: 4, ap: false, defense: 3, hp: 7, color: "#d49a38" },
+  { id: "unit-1784286539565-6a7fb6ee3a8618", name: "Fanatics", strike: 7, ap: false, defense: 4, hp: 7, color: "#64865a" },
+  { id: "unit-1784282608507-5f497a71b3ddd8", name: "Halberds", strike: 3, ap: true, defense: 3, hp: 7, color: "#3e9a96" },
+  { id: "cavalry", name: "Heavy Cavalry", strike: 3, ap: false, defense: 6, hp: 7, color: "#64865a" },
+  { id: "unit-1784282596293-1f8c1e30496298", name: "Infantry", strike: 4, ap: false, defense: 5, hp: 7, color: "#8b68a5" },
+  { id: "unit-1784283739165-e3ceef4d099108", name: "Cavalry", strike: 3, ap: false, defense: 5, hp: 7, color: "#c95f4b" },
+  { id: "unit-1784283773309-18aaaed3017128", name: "Light Cavalry", strike: 3, ap: false, defense: 4, hp: 7, color: "#597fb3" },
+  { id: "unit-1784286577839-4820f65e87148", name: "Lancers", strike: 2, ap: true, defense: 4, hp: 7, color: "#64865a" }
+];
+
 const unitGrid = document.querySelector("#unitGrid");
 const unitCount = document.querySelector("#unitCount");
 const addUnitButton = document.querySelector("#addUnitButton");
@@ -25,6 +42,7 @@ const outcomeKey = document.querySelector(".outcome-key");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
 const viewButtons = [...document.querySelectorAll(".view-button")];
 
+let unitLoadNeedsPersist = false;
 let units = loadUnits();
 let shownUnits = cloneUnits(units);
 let activeView = loadView();
@@ -58,10 +76,49 @@ function sanitiseUnits(value) {
   }));
 }
 
+function validSavedUnits(value) {
+  return Array.isArray(value) && value.length >= MIN_UNITS;
+}
+
+function isExampleRoster(value) {
+  if (!validSavedUnits(value) || value.length !== DEFAULT_UNITS.length) return false;
+  const comparable = unitsToCompare => sanitiseUnits(unitsToCompare).map(({ id, name, strike, ap, defense, hp, color }) => (
+    { id, name, strike, ap, defense, hp, color }
+  ));
+  return JSON.stringify(comparable(value)) === JSON.stringify(comparable(DEFAULT_UNITS));
+}
+
+function loadCookieUnits() {
+  try {
+    const prefix = `${STORAGE_COOKIE}=`;
+    const stored = document.cookie.split("; ").find(item => item.startsWith(prefix));
+    if (!stored) return null;
+    const saved = JSON.parse(decodeURIComponent(stored.slice(prefix.length)));
+    return validSavedUnits(saved) ? saved : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function loadUnits() {
+  const cookieSaved = loadCookieUnits();
+  if (cookieSaved) return sanitiseUnits(cookieSaved);
+
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (Array.isArray(saved) && saved.length >= MIN_UNITS) return sanitiseUnits(saved);
+    if (validSavedUnits(saved) && !isExampleRoster(saved)) {
+      // Mirror a legacy origin-local save into a port-independent localhost cookie.
+      unitLoadNeedsPersist = true;
+      return sanitiseUnits(saved);
+    }
+
+    const recoveryApplied = localStorage.getItem(RECOVERY_KEY) === "1";
+    if (!recoveryApplied) {
+      unitLoadNeedsPersist = true;
+      return sanitiseUnits(RECOVERED_UNITS);
+    }
+
+    if (validSavedUnits(saved)) return sanitiseUnits(saved);
   } catch (_) {
     // Use the examples when stored data is unavailable or malformed.
   }
@@ -86,8 +143,18 @@ function loadCounterThreshold() {
 function saveUnits() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(units));
+    localStorage.setItem(RECOVERY_KEY, "1");
   } catch (_) {
     // The app remains fully usable when local storage is blocked.
+  }
+
+  try {
+    const encoded = encodeURIComponent(JSON.stringify(sanitiseUnits(units)));
+    if (encoded.length <= 3800) {
+      document.cookie = `${STORAGE_COOKIE}=${encoded}; Max-Age=157680000; Path=/; SameSite=Lax`;
+    }
+  } catch (_) {
+    // Cookies may be unavailable for file URLs; origin-local storage still works there.
   }
 }
 
@@ -1383,5 +1450,5 @@ enableMatchupRowSorting();
 renderEditor();
 renderResults();
 setUpdating(false);
-saveUnits();
+if (unitLoadNeedsPersist) saveUnits();
 window.addEventListener("beforeunload", saveUnits);
