@@ -17,6 +17,24 @@
 
       <div class="top-actions">
         <span class="save-state" id="saveState"><span></span>Saved locally</span>
+        <div class="set-manager" id="setManager">
+          <button class="button button-quiet sets-button" id="setsButton" type="button" aria-expanded="false" aria-controls="setMenu">
+            Sets <span class="sets-count" id="setsCount">0</span>
+          </button>
+          <div class="set-menu" id="setMenu" hidden>
+            <div class="set-menu-heading">
+              <strong>Saved stat sets</strong>
+              <span>Save or restore a complete roster.</span>
+            </div>
+            <form class="set-save-form" id="setSaveForm">
+              <label class="sr-only" for="setName">Set name</label>
+              <input id="setName" type="text" maxlength="32" placeholder="Set name" autocomplete="off" required>
+              <button class="button button-primary" type="submit">Save current</button>
+            </form>
+            <div class="set-list" id="setList" aria-live="polite"></div>
+            <p class="set-empty" id="setEmpty">No saved sets yet.</p>
+          </div>
+        </div>
         <button class="button button-quiet" id="resetButton" type="button" title="Restore the example units">
           Reset
         </button>
@@ -31,8 +49,18 @@
             <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
           <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+. Every natural 6 scores a hit and adds another die, which can also explode.">
-            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode <i></i> first strike unknown
+            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode
           </div>
+          <label class="drill-rule-control" title="When enabled, the unit with higher Drill gains 1 STR and the lower-Drill unit loses 1 STR in every matchup. Equal Drill has no effect.">
+            <input id="drillEffectToggle" type="checkbox">
+            <span class="drill-rule-toggle" aria-hidden="true"></span>
+            <span>Drill effect</span>
+          </label>
+          <label class="speed-rule-control" title="When enabled, the faster unit makes one free attack before the normal fight begins. Equal Speed grants no free attack.">
+            <input id="speedEffectToggle" type="checkbox">
+            <span class="speed-rule-toggle" aria-hidden="true"></span>
+            <span>Speed effect</span>
+          </label>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
           </button>
@@ -54,6 +82,10 @@
             <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="matrix">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h3v3H2zm4.5 0h3v3h-3zM11 2h3v3h-3zM2 6.5h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3zM2 11h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3z"/></svg>
               Matrix
+            </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="similarity">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm9.5 1a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3ZM7.5 9a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm-3-3.4 1.8 4m4-3.8L9 9.5" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
+              Similarity
             </button>
             <button class="view-button" type="button" role="tab" aria-selected="false" data-view="bars">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></svg>
@@ -91,6 +123,8 @@
         </button>
       </div>
       <div class="stats-row">
+        <label class="stat-control speed-control" title="The faster unit makes one free opening attack when the global Speed effect is enabled"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
+        <label class="stat-control drill-control" title="Drill modifies both units' STR by 1 when their Drill values differ"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
         <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
         <label class="stat-control hp-control" title="Hits required to kill this unit"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
