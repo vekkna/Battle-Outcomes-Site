@@ -51,7 +51,7 @@
           <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+. Every natural 6 scores a hit and adds another die, which can also explode.">
             <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode
           </div>
-          <label class="drill-rule-control" title="When enabled, the unit with higher Drill gains 1 STR and the lower-Drill unit loses 1 STR in every matchup. Equal Drill has no effect.">
+          <label class="drill-rule-control" title="When enabled, the unit with higher Drill gains 1 STR in every matchup. The lower-Drill unit keeps its base STR. Equal Drill has no effect.">
             <input id="drillEffectToggle" type="checkbox">
             <span class="drill-rule-toggle" aria-hidden="true"></span>
             <span>Drill effect</span>
@@ -99,6 +99,14 @@
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.25h12v1.5H2zM4 4.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Zm5 3.5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 9 8Zm3-5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 12 3Z"/></svg>
               Profile
             </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="health">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h2.2l1.2-3 2.1 6 1.7-4H14M3 2.5h10v11H3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Health
+            </button>
+            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="generator">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3zM5.5 6h5M5.5 8h5m-5 2h3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Generator
+            </button>
           </div>
         </div>
         <div class="result-stage" id="resultStage" aria-live="polite"></div>
@@ -124,7 +132,7 @@
       </div>
       <div class="stats-row">
         <label class="stat-control speed-control" title="The faster unit makes one free opening attack when the global Speed effect is enabled"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
-        <label class="stat-control drill-control" title="Drill modifies both units' STR by 1 when their Drill values differ"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
+        <label class="stat-control drill-control" title="The higher-Drill unit gains 1 STR; the lower-Drill unit keeps its base STR"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
         <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
         <label class="stat-control hp-control" title="Hits required to kill this unit"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>

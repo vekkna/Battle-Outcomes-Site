@@ -11,6 +11,8 @@ const UNIT_SET_COOKIE_PREFIX = "matchup-board-unit-set-v1-";
 const DRILL_EFFECT_KEY = "matchup-board-drill-effect-v1";
 const SPEED_EFFECT_KEY = "matchup-board-speed-effect-v1";
 const SIMILARITY_METRIC_KEY = "matchup-board-similarity-metric-v1";
+const GENERATOR_CONFIG_KEY = "matchup-board-generator-config-v1";
+const GENERATOR_UNIT_COOKIE_PREFIX = "matchup-board-generator-unit-v1-";
 const MAX_UNITS = 16;
 const MIN_UNITS = 2;
 const PALETTE = ["#c95f4b", "#597fb3", "#d49a38", "#64865a", "#8b68a5", "#3e9a96"];
@@ -35,6 +37,23 @@ const RECOVERED_UNITS = [
   { id: "unit-1784283739165-e3ceef4d099108", name: "Cavalry", strike: 3, drill: 0, ap: false, defense: 5, hp: 7, color: "#c95f4b" },
   { id: "unit-1784283773309-18aaaed3017128", name: "Light Cavalry", strike: 3, drill: 0, ap: false, defense: 4, hp: 7, color: "#597fb3" },
   { id: "unit-1784286577839-4820f65e87148", name: "Lancers", strike: 2, drill: 0, ap: true, defense: 4, hp: 7, color: "#64865a" }
+];
+
+const GENERATOR_OBJECTIVES = [
+  { id: "balance", name: "Power balance", description: "Keep every unit's average win rate close to 50%." },
+  { id: "diversity", name: "Role diversity", description: "Separate centred matchup profiles while respecting the hard-counter limit." },
+  { id: "coverage", name: "Counter coverage", description: "Give every unit at least one clear favourable and unfavourable matchup." },
+  { id: "polarity", name: "Limit hard counters", description: "Penalize matchup results beyond the selected maximum advantage." },
+  { id: "stability", name: "Rule stability", description: "Reduce excessive dependence on the Drill and Speed effects." },
+  { id: "minimalChanges", name: "Minimal stat changes", description: "Prefer candidates that stay close to the current roster." }
+];
+
+const GENERATOR_STATS = [
+  { id: "speed", label: "SPD", name: "Speed", min: 0, max: 99 },
+  { id: "drill", label: "DRL", name: "Drill", min: 0, max: 99 },
+  { id: "strike", label: "STR", name: "Strength", min: 1, max: 99 },
+  { id: "defense", label: "DEF", name: "Defence", min: 1, max: 6 },
+  { id: "hp", label: "HP", name: "HP", min: 1, max: 99 }
 ];
 
 const unitGrid = document.querySelector("#unitGrid");
@@ -76,6 +95,9 @@ let draggedMatrixUnitId = null;
 let matchupOrders = loadMatchupOrders();
 let unitSetsNeedPersist = false;
 let unitSets = loadUnitSets();
+let generatorConfig = loadGeneratorConfig();
+let generatorCandidates = [];
+let generatorRunToken = 0;
 
 function cloneUnits(value) {
   return value.map(unit => ({ ...unit }));
@@ -252,6 +274,127 @@ function saveUnitSets() {
   });
 }
 
+function defaultGeneratorUnitConstraint() {
+  return {
+    tags: "",
+    goodAgainst: "",
+    weakAgainst: "",
+    ap: "any",
+    stats: Object.fromEntries(GENERATOR_STATS.map(stat => [stat.id, {
+      min: stat.min,
+      max: stat.max,
+      locked: false
+    }]))
+  };
+}
+
+function normaliseGeneratorUnitConstraint(value) {
+  const fallback = defaultGeneratorUnitConstraint();
+  const saved = value && typeof value === "object" ? value : {};
+  const stats = {};
+  GENERATOR_STATS.forEach(stat => {
+    const range = saved.stats?.[stat.id] || {};
+    stats[stat.id] = {
+      min: safeNumber(range.min, stat.min, stat.min, stat.max),
+      max: safeNumber(range.max, stat.max, stat.min, stat.max),
+      locked: Boolean(range.locked)
+    };
+  });
+  return {
+    ...fallback,
+    tags: String(saved.tags || "").slice(0, 120),
+    goodAgainst: String(saved.goodAgainst || "").slice(0, 120),
+    weakAgainst: String(saved.weakAgainst || "").slice(0, 120),
+    ap: ["any", "on", "off", "locked"].includes(saved.ap) ? saved.ap : "any",
+    stats
+  };
+}
+
+function normaliseGeneratorConfig(value) {
+  const saved = value && typeof value === "object" ? value : {};
+  const objectives = {};
+  GENERATOR_OBJECTIVES.forEach(objective => {
+    const fallback = objective.id === "stability" || objective.id === "minimalChanges" ? 1 : 3;
+    objectives[objective.id] = safeNumber(saved.objectives?.[objective.id], fallback, 0, 3);
+  });
+  const unitConstraints = {};
+  units.forEach(unit => {
+    unitConstraints[unit.id] = normaliseGeneratorUnitConstraint(saved.units?.[unit.id]);
+  });
+  return {
+    objectives,
+    settings: {
+      clearAdvantage: safeNumber(saved.settings?.clearAdvantage, 60, 51, 75),
+      hardCounter: safeNumber(saved.settings?.hardCounter, 80, 65, 95),
+      candidateCount: safeNumber(saved.settings?.candidateCount, 5, 3, 12)
+    },
+    units: unitConstraints
+  };
+}
+
+function loadGeneratorConfig() {
+  let local = null;
+  try {
+    local = JSON.parse(localStorage.getItem(GENERATOR_CONFIG_KEY));
+  } catch (_) {
+    // Try the cross-port cookie copies below.
+  }
+
+  try {
+    const header = JSON.parse(readCookieValue(GENERATOR_CONFIG_KEY));
+    if (header && typeof header === "object") {
+      const cookieUnits = {};
+      const unitIds = Array.isArray(header.unitIds) ? header.unitIds : [];
+      unitIds.forEach(id => {
+        try {
+          const savedUnit = JSON.parse(readCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${id}`));
+          if (savedUnit) cookieUnits[id] = savedUnit;
+        } catch (_) {
+          if (local?.units?.[id]) cookieUnits[id] = local.units[id];
+        }
+      });
+      return normaliseGeneratorConfig({ ...header, units: { ...(local?.units || {}), ...cookieUnits } });
+    }
+  } catch (_) {
+    // Fall back to origin-local configuration.
+  }
+  return normaliseGeneratorConfig(local);
+}
+
+function saveGeneratorConfig() {
+  try {
+    localStorage.setItem(GENERATOR_CONFIG_KEY, JSON.stringify(generatorConfig));
+  } catch (_) {
+    // Cross-port cookie copies may still be available.
+  }
+  const header = {
+    objectives: generatorConfig.objectives,
+    settings: generatorConfig.settings,
+    unitIds: Object.keys(generatorConfig.units)
+  };
+  writeCookieValue(GENERATOR_CONFIG_KEY, JSON.stringify(header));
+  Object.entries(generatorConfig.units).forEach(([id, constraint]) => {
+    writeCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${id}`, JSON.stringify(constraint));
+  });
+}
+
+function generatorConstraintFor(unit) {
+  if (!generatorConfig.units[unit.id]) {
+    generatorConfig.units[unit.id] = defaultGeneratorUnitConstraint();
+  }
+  return generatorConfig.units[unit.id];
+}
+
+function syncGeneratorConfigToUnits() {
+  const previousIds = Object.keys(generatorConfig.units);
+  generatorConfig = normaliseGeneratorConfig(generatorConfig);
+  const activeIds = new Set(units.map(unit => unit.id));
+  previousIds.filter(id => !activeIds.has(id)).forEach(id => {
+    deleteCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${id}`);
+  });
+  saveGeneratorConfig();
+}
+
 function loadUnits() {
   const cookieSaved = loadCookieUnits();
   if (cookieSaved) return sanitiseUnits(cookieSaved);
@@ -279,7 +422,7 @@ function loadUnits() {
 
 function loadView() {
   const saved = localStorage.getItem(VIEW_KEY);
-  return ["bars", "matrix", "similarity", "counters", "profile"].includes(saved) ? saved : "matrix";
+  return ["bars", "matrix", "similarity", "counters", "profile", "health", "generator"].includes(saved) ? saved : "matrix";
 }
 
 function loadSimilarityMetric() {
@@ -704,8 +847,8 @@ function effectiveStrikes(a, b) {
   let adjustmentA = 0;
   let adjustmentB = 0;
   if (drillEffectEnabled && a.drill !== b.drill) {
-    adjustmentA = a.drill > b.drill ? 1 : -1;
-    adjustmentB = -adjustmentA;
+    if (a.drill > b.drill) adjustmentA = 1;
+    else adjustmentB = 1;
   }
   return {
     strikeA: Math.max(0, a.strike + adjustmentA),
@@ -998,8 +1141,7 @@ function hitTarget(attacker, defender) {
 
 function matchupStrikeText(unit, effectiveStrike, adjustment) {
   if (!adjustment) return `${effectiveStrike} dice`;
-  const signedAdjustment = adjustment > 0 ? "+1" : "−1";
-  return `${effectiveStrike} dice (base STR ${unit.strike}, Drill ${signedAdjustment})`;
+  return `${effectiveStrike} dice (base STR ${unit.strike}, Drill +1)`;
 }
 
 function matchupInitiativeText(matchup) {
@@ -1093,6 +1235,7 @@ function loadNamedUnitSet(id) {
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
+  syncGeneratorConfigToUnits();
   renderEditor();
   renderResults();
   setUpdating(false);
@@ -1273,7 +1416,9 @@ function strengthEntries() {
 }
 
 function matchupPatternDistance(a, b, centreProfiles = false) {
-  const commonOpponents = shownUnits.filter(unit => unit.id !== a.id && unit.id !== b.id);
+  const commonOpponents = shownUnits
+    .filter(unit => unit.id !== a.id && unit.id !== b.id)
+    .sort((first, second) => first.id < second.id ? -1 : first.id > second.id ? 1 : 0);
   if (!commonOpponents.length) return 0;
   const profileA = commonOpponents.map(opponent => getMatchup(a, opponent).shareA);
   const profileB = commonOpponents.map(opponent => getMatchup(b, opponent).shareA);
@@ -1579,7 +1724,9 @@ function createSvgElement(tag, attributes = {}, text) {
   return node;
 }
 
-function similarityLayout(units, metric) {
+function similarityLayout(inputUnits, metric) {
+  const units = [...inputUnits]
+    .sort((first, second) => first.id < second.id ? -1 : first.id > second.id ? 1 : 0);
   const count = units.length;
   const distances = Array.from({ length: count }, () => new Float64Array(count));
   for (let first = 0; first < count; first += 1) {
@@ -1624,7 +1771,7 @@ function similarityLayout(units, metric) {
     if (movement < 1e-8) break;
   }
 
-  return { positions, distances };
+  return { units, positions, distances };
 }
 
 function fitSimilarityLayout(positions, width, height) {
@@ -1702,7 +1849,7 @@ function renderSimilarity() {
 
   const width = 1200;
   const height = 520;
-  const { positions, distances } = similarityLayout(shownUnits, similarityMetric);
+  const { units: similarityUnits, positions, distances } = similarityLayout(shownUnits, similarityMetric);
   const differenceLabel = specializationMode ? "specialization-pattern difference" : "matchup difference";
   const fitted = fitSimilarityLayout(positions, width, height);
   const svg = createSvgElement("svg", {
@@ -1719,10 +1866,10 @@ function renderSimilarity() {
 
   const links = createSvgElement("g", { class: "similarity-links", "aria-hidden": "true" });
   const linkedPairs = new Set();
-  shownUnits.forEach((_, first) => {
+  similarityUnits.forEach((_, first) => {
     let nearest = -1;
     let nearestDistance = Infinity;
-    shownUnits.forEach((__, second) => {
+    similarityUnits.forEach((__, second) => {
       if (first !== second && distances[first][second] < nearestDistance) {
         nearest = second;
         nearestDistance = distances[first][second];
@@ -1740,8 +1887,8 @@ function renderSimilarity() {
   });
   svg.append(links);
 
-  shownUnits.forEach((unit, index) => {
-    const nearest = shownUnits
+  similarityUnits.forEach((unit, index) => {
+    const nearest = similarityUnits
       .map((other, otherIndex) => ({ other, otherIndex, distance: distances[index][otherIndex] }))
       .filter(entry => entry.otherIndex !== index)
       .sort((a, b) => a.distance - b.distance)[0];
@@ -1777,6 +1924,1065 @@ function renderSimilarity() {
   );
   view.append(toolbar, svg, caption);
   resultStage.replaceChildren(view);
+}
+
+function matchupPairsAtRuleState(drillEnabled, speedEnabled) {
+  const previousDrill = drillEffectEnabled;
+  const previousSpeed = speedEffectEnabled;
+  try {
+    drillEffectEnabled = drillEnabled;
+    speedEffectEnabled = speedEnabled;
+    matchupCache.clear();
+    const pairs = [];
+    for (let first = 0; first < shownUnits.length; first += 1) {
+      for (let second = first + 1; second < shownUnits.length; second += 1) {
+        pairs.push({
+          a: shownUnits[first],
+          b: shownUnits[second],
+          shareA: getMatchup(shownUnits[first], shownUnits[second]).shareA
+        });
+      }
+    }
+    return pairs;
+  } finally {
+    drillEffectEnabled = previousDrill;
+    speedEffectEnabled = previousSpeed;
+    matchupCache.clear();
+  }
+}
+
+function ruleSensitivity(offPairs, onPairs) {
+  if (!offPairs.length) return { average: 0, maximum: 0, pair: null };
+  let total = 0;
+  let maximum = -1;
+  let maximumPair = null;
+  offPairs.forEach((pair, index) => {
+    const difference = Math.abs(pair.shareA - onPairs[index].shareA);
+    total += difference;
+    if (difference > maximum) {
+      maximum = difference;
+      maximumPair = pair;
+    }
+  });
+  return {
+    average: total / offPairs.length,
+    maximum,
+    pair: maximumPair
+  };
+}
+
+function createHealthMetric(label, value, description, tone = "neutral") {
+  const card = createElement("div", `health-metric ${tone}`);
+  card.append(
+    createElement("span", "health-metric-label", label),
+    createElement("strong", "health-metric-value", value),
+    createElement("span", "health-metric-description", description)
+  );
+  return card;
+}
+
+function renderHealth() {
+  const view = createElement("div", "health-view");
+  const toolbar = createElement("div", "visual-toolbar health-toolbar");
+  toolbar.append(
+    createElement("span", "visual-toolbar-label", "Roster health"),
+    createElement("span", "visual-toolbar-note", "Balance · distinct roles · counterplay · rule stability")
+  );
+
+  const entries = strengthEntries();
+  const sortedByStrength = [...entries].sort((a, b) => b.average - a.average || a.index - b.index);
+  const balanceError = Math.sqrt(
+    entries.reduce((total, entry) => total + (entry.average - 50) ** 2, 0) / entries.length
+  );
+  const balanceTone = balanceError <= 5 ? "good" : balanceError <= 10 ? "warning" : "risk";
+  const activePairs = [];
+  for (let first = 0; first < shownUnits.length; first += 1) {
+    for (let second = first + 1; second < shownUnits.length; second += 1) {
+      activePairs.push({
+        a: shownUnits[first],
+        b: shownUnits[second],
+        shareA: getMatchup(shownUnits[first], shownUnits[second]).shareA
+      });
+    }
+  }
+  const extremePairs = activePairs.filter(pair => pair.shareA >= 80 || pair.shareA <= 20);
+
+  const coverageThreshold = 60;
+  const coverage = entries.map(entry => {
+    const shares = shownUnits
+      .filter(opponent => opponent.id !== entry.unit.id)
+      .map(opponent => getMatchup(entry.unit, opponent).shareA);
+    return {
+      unit: entry.unit,
+      hasFavourable: shares.some(share => share >= coverageThreshold),
+      hasUnfavourable: shares.some(share => share <= 100 - coverageThreshold)
+    };
+  });
+  const coveredUnits = coverage.filter(entry => entry.hasFavourable && entry.hasUnfavourable).length;
+  const coverageRatio = coveredUnits / coverage.length;
+  const coverageTone = coverageRatio >= .8 ? "good" : coverageRatio >= .5 ? "warning" : "risk";
+
+  const specializationPairs = [];
+  const nearestDistances = new Map(shownUnits.map(unit => [unit.id, Infinity]));
+  if (shownUnits.length >= 4) {
+    for (let first = 0; first < shownUnits.length; first += 1) {
+      for (let second = first + 1; second < shownUnits.length; second += 1) {
+        const distance = matchupPatternDistance(shownUnits[first], shownUnits[second], true) * 50;
+        specializationPairs.push({ a: shownUnits[first], b: shownUnits[second], distance });
+        nearestDistances.set(shownUnits[first].id, Math.min(nearestDistances.get(shownUnits[first].id), distance));
+        nearestDistances.set(shownUnits[second].id, Math.min(nearestDistances.get(shownUnits[second].id), distance));
+      }
+    }
+  }
+  specializationPairs.sort((a, b) => a.distance - b.distance);
+  const closestPair = specializationPairs[0] || null;
+  const finiteNearestDistances = [...nearestDistances.values()].filter(Number.isFinite);
+  const averageNearestDistance = finiteNearestDistances.length
+    ? finiteNearestDistances.reduce((sum, value) => sum + value, 0) / finiteNearestDistances.length
+    : null;
+  const diversityTone = averageNearestDistance === null
+    ? "neutral"
+    : averageNearestDistance > 18
+      ? "warning"
+      : averageNearestDistance >= 6
+        ? "good"
+        : "risk";
+
+  const drillSensitivity = ruleSensitivity(
+    matchupPairsAtRuleState(false, speedEffectEnabled),
+    matchupPairsAtRuleState(true, speedEffectEnabled)
+  );
+  const speedSensitivity = ruleSensitivity(
+    matchupPairsAtRuleState(drillEffectEnabled, false),
+    matchupPairsAtRuleState(drillEffectEnabled, true)
+  );
+
+  const metrics = createElement("div", "health-metrics");
+  metrics.append(
+    createHealthMetric(
+      "Balance error",
+      `${formatMetric(balanceError)} pts`,
+      "RMS deviation of unit-average win rates from 50%",
+      balanceTone
+    ),
+    createHealthMetric(
+      "Role separation",
+      averageNearestDistance === null ? "Need 4 units" : `${formatMetric(averageNearestDistance)} pts`,
+      "Mean distance to each unit's nearest centred profile",
+      diversityTone
+    ),
+    createHealthMetric(
+      "Counter coverage",
+      `${coveredUnits} / ${coverage.length}`,
+      `Units with both a ${coverageThreshold}%+ and a ${100 - coverageThreshold}%- matchup`,
+      coverageTone
+    )
+  );
+
+  const panels = createElement("div", "health-panels");
+  const powerPanel = createElement("section", "health-panel health-power-panel");
+  const powerHeading = createElement("div", "health-panel-heading");
+  powerHeading.append(
+    createElement("strong", "", "Power balance"),
+    createElement("span", "", `${sortedByStrength[0].unit.name} strongest · ${sortedByStrength.at(-1).unit.name} weakest`)
+  );
+  const powerList = createElement("div", "health-power-list");
+  sortedByStrength.forEach(entry => {
+    const row = createElement("div", "health-power-row");
+    const label = createUnitHeading(entry.unit);
+    const track = createElement("div", "health-power-track");
+    const marker = createElement("span", "health-power-marker");
+    marker.style.setProperty("--position", `${entry.average}%`);
+    marker.style.setProperty("--unit-color", entry.unit.color);
+    track.append(marker);
+    row.append(label, track, createElement("strong", "health-power-value", `${Math.round(entry.average)}%`));
+    powerList.append(row);
+  });
+  powerPanel.append(powerHeading, powerList);
+
+  const diagnosisPanel = createElement("section", "health-panel health-diagnosis-panel");
+  const diagnosisHeading = createElement("div", "health-panel-heading");
+  diagnosisHeading.append(
+    createElement("strong", "", "Diversity and counterplay"),
+    createElement("span", "", "Specialization uses centred matchup profiles")
+  );
+  const diagnosisList = createElement("div", "health-diagnosis-list");
+  const redundancy = createElement("div", "health-diagnosis-item");
+  redundancy.append(createElement("span", "", "Most redundant pair"));
+  redundancy.append(createElement(
+    "strong",
+    "",
+    closestPair
+      ? `${closestPair.a.name} + ${closestPair.b.name} · ${formatMetric(closestPair.distance)} pts`
+      : "Need at least 4 units"
+  ));
+  diagnosisList.append(redundancy);
+
+  const polarity = createElement(
+    "div",
+    `health-diagnosis-item${extremePairs.length ? "" : " health-diagnosis-good"}`
+  );
+  polarity.append(
+    createElement("span", "", "Extreme matchups"),
+    createElement(
+      "strong",
+      "",
+      extremePairs.length
+        ? `${extremePairs.length} at 80/20 or wider`
+        : "None at 80/20 or wider"
+    )
+  );
+  diagnosisList.append(polarity);
+
+  const coverageIssues = coverage.filter(entry => !entry.hasFavourable || !entry.hasUnfavourable);
+  if (!coverageIssues.length) {
+    const complete = createElement("div", "health-diagnosis-item health-diagnosis-good");
+    complete.append(
+      createElement("span", "", "Counter structure"),
+      createElement("strong", "", "Every unit has a clear strength and weakness")
+    );
+    diagnosisList.append(complete);
+  } else {
+    coverageIssues.forEach(entry => {
+      const missing = [
+        !entry.hasFavourable ? "no 60%+ matchup" : null,
+        !entry.hasUnfavourable ? "no 40%- matchup" : null
+      ].filter(Boolean).join(" · ");
+      const issue = createElement("div", "health-diagnosis-item");
+      issue.append(createElement("span", "", entry.unit.name), createElement("strong", "", missing));
+      diagnosisList.append(issue);
+    });
+  }
+  diagnosisPanel.append(diagnosisHeading, diagnosisList);
+
+  const sensitivityPanel = createElement("section", "health-panel health-sensitivity-panel");
+  const sensitivityHeading = createElement("div", "health-panel-heading");
+  sensitivityHeading.append(
+    createElement("strong", "", "Rule sensitivity"),
+    createElement("span", "", "Average absolute change when each effect is switched on")
+  );
+  const sensitivityList = createElement("div", "health-sensitivity-list");
+  [
+    ["Drill", drillSensitivity],
+    ["Speed", speedSensitivity]
+  ].forEach(([label, sensitivity]) => {
+    const row = createElement("div", "health-sensitivity-row");
+    const details = createElement("div", "health-sensitivity-details");
+    details.append(
+      createElement("strong", "", `${label} · ${formatMetric(sensitivity.average)} pts average`),
+      createElement(
+        "span",
+        "",
+        sensitivity.pair
+          ? `Largest: ${sensitivity.pair.a.name} vs ${sensitivity.pair.b.name} · ${formatMetric(sensitivity.maximum)} pts`
+          : "No matchups"
+      )
+    );
+    const gauge = createElement("div", "health-sensitivity-gauge");
+    const fill = createElement("span");
+    fill.style.setProperty("--sensitivity", `${Math.min(100, sensitivity.average * 8)}%`);
+    gauge.append(fill);
+    row.append(details, gauge);
+    sensitivityList.append(row);
+  });
+  sensitivityPanel.append(sensitivityHeading, sensitivityList);
+
+  panels.append(powerPanel, diagnosisPanel, sensitivityPanel);
+  view.append(toolbar, metrics, panels);
+  resultStage.replaceChildren(view);
+}
+
+function parseGeneratorTags(value) {
+  return String(value || "")
+    .split(",")
+    .map(tag => tag.trim())
+    .filter(Boolean);
+}
+
+function generatorUnitStatus(unit, constraint) {
+  const roleTags = parseGeneratorTags(constraint.tags);
+  const intents = parseGeneratorTags(constraint.goodAgainst).length + parseGeneratorTags(constraint.weakAgainst).length;
+  const lockedStats = GENERATOR_STATS.filter(stat => constraint.stats[stat.id].locked).length;
+  const rangedStats = GENERATOR_STATS.filter(stat => {
+    const range = constraint.stats[stat.id];
+    return !range.locked && (range.min !== stat.min || range.max !== stat.max);
+  }).length;
+  const parts = [];
+  if (roleTags.length) parts.push(roleTags.join(", "));
+  if (intents) parts.push(`${intents} matchup intent${intents === 1 ? "" : "s"}`);
+  if (lockedStats) parts.push(`${lockedStats} fixed`);
+  if (rangedStats) parts.push(`${rangedStats} ranged`);
+  if (constraint.ap !== "any") parts.push("AP constrained");
+  return parts.join(" · ") || "Open constraints";
+}
+
+function generatorValidation() {
+  const definedTags = new Set();
+  units.forEach(unit => {
+    parseGeneratorTags(generatorConstraintFor(unit).tags).forEach(tag => definedTags.add(tag.toLowerCase()));
+  });
+
+  let constrainedUnits = 0;
+  let lockedStats = 0;
+  let invalidRanges = 0;
+  const unknownTags = new Set();
+  units.forEach(unit => {
+    const constraint = generatorConstraintFor(unit);
+    let constrained = constraint.ap !== "any"
+      || Boolean(parseGeneratorTags(constraint.tags).length)
+      || Boolean(parseGeneratorTags(constraint.goodAgainst).length)
+      || Boolean(parseGeneratorTags(constraint.weakAgainst).length);
+    GENERATOR_STATS.forEach(stat => {
+      const range = constraint.stats[stat.id];
+      if (range.locked) {
+        lockedStats += 1;
+        constrained = true;
+      } else {
+        if (range.min !== stat.min || range.max !== stat.max) constrained = true;
+        if (range.min > range.max) invalidRanges += 1;
+      }
+    });
+    [...parseGeneratorTags(constraint.goodAgainst), ...parseGeneratorTags(constraint.weakAgainst)].forEach(tag => {
+      if (!definedTags.has(tag.toLowerCase())) unknownTags.add(tag);
+    });
+    if (constrained) constrainedUnits += 1;
+  });
+
+  const activeObjectives = GENERATOR_OBJECTIVES.filter(objective => generatorConfig.objectives[objective.id] > 0).length;
+  const targetConflict = generatorConfig.settings.hardCounter <= generatorConfig.settings.clearAdvantage;
+  return { activeObjectives, constrainedUnits, lockedStats, invalidRanges, unknownTags, targetConflict };
+}
+
+function updateGeneratorView(view) {
+  view.querySelectorAll(".generator-objective").forEach(card => {
+    const priority = generatorConfig.objectives[card.dataset.objectiveId];
+    card.dataset.priority = String(priority);
+  });
+
+  view.querySelectorAll(".generator-unit").forEach(card => {
+    const unit = units.find(item => item.id === card.dataset.unitId);
+    if (!unit) return;
+    const constraint = generatorConstraintFor(unit);
+    const status = card.querySelector("[data-generator-unit-status]");
+    if (status) status.textContent = generatorUnitStatus(unit, constraint);
+  });
+
+  view.querySelectorAll(".generator-stat-row").forEach(row => {
+    const unit = units.find(item => item.id === row.dataset.unitId);
+    const stat = GENERATOR_STATS.find(item => item.id === row.dataset.statId);
+    if (!unit || !stat) return;
+    const range = generatorConstraintFor(unit).stats[stat.id];
+    const minInput = row.querySelector('[data-generator-part="min"]');
+    const maxInput = row.querySelector('[data-generator-part="max"]');
+    const lockedInput = row.querySelector('[data-generator-part="locked"]');
+    row.classList.toggle("locked", range.locked);
+    row.classList.toggle("invalid", !range.locked && range.min > range.max);
+    minInput.disabled = range.locked;
+    maxInput.disabled = range.locked;
+    minInput.value = range.locked ? unit[stat.id] : range.min;
+    maxInput.value = range.locked ? unit[stat.id] : range.max;
+    lockedInput.checked = range.locked;
+  });
+
+  const status = generatorValidation();
+  const summary = view.querySelector("[data-generator-summary]");
+  const summaryTitle = view.querySelector("[data-generator-summary-title]");
+  const summaryText = view.querySelector("[data-generator-summary-text]");
+  const summaryMark = view.querySelector(".generator-summary-mark");
+  const issues = status.invalidRanges + (status.targetConflict ? 1 : 0) + status.unknownTags.size;
+  summary.classList.toggle("warning", Boolean(issues || !status.activeObjectives));
+  summaryMark.textContent = issues || !status.activeObjectives ? "!" : "✓";
+  const generateButton = view.querySelector("[data-action=generate-rosters]");
+  if (generateButton && generateButton.dataset.running !== "true") {
+    generateButton.disabled = Boolean(issues || !status.activeObjectives);
+    generateButton.title = generateButton.disabled ? "Resolve the configuration warning before generating" : "Search for roster candidates";
+  }
+  if (status.invalidRanges) {
+    summaryTitle.textContent = "Fix the highlighted stat ranges";
+    summaryText.textContent = `${status.invalidRanges} minimum value${status.invalidRanges === 1 ? " is" : "s are"} above its maximum.`;
+  } else if (status.targetConflict) {
+    summaryTitle.textContent = "Separate the matchup targets";
+    summaryText.textContent = "The hard-counter ceiling must be higher than the clear-advantage threshold.";
+  } else if (status.unknownTags.size) {
+    summaryTitle.textContent = "Some matchup tags are not defined";
+    summaryText.textContent = `Add these to a unit's role tags: ${[...status.unknownTags].join(", ")}.`;
+  } else if (!status.activeObjectives) {
+    summaryTitle.textContent = "Choose at least one objective";
+    summaryText.textContent = "Every optimization priority is currently switched off.";
+  } else {
+    summaryTitle.textContent = "Configuration ready";
+    summaryText.textContent = `${status.activeObjectives} objectives active · ${status.constrainedUnits} of ${units.length} units constrained · ${status.lockedStats} stats fixed.`;
+  }
+}
+
+function appendSelectOptions(select, options, selectedValue) {
+  options.forEach(([value, label]) => {
+    const option = createElement("option", "", label);
+    option.value = value;
+    option.selected = String(value) === String(selectedValue);
+    select.append(option);
+  });
+}
+
+function estimateGeneratorMatchup(a, b, drillEnabled = drillEffectEnabled, speedEnabled = speedEffectEnabled) {
+  let strikeA = a.strike;
+  let strikeB = b.strike;
+  if (drillEnabled && a.drill !== b.drill) {
+    if (a.drill > b.drill) strikeA += 1;
+    else strikeB += 1;
+  }
+  const damageA = Math.max(.001, strikeA * hitChance(a, b) / (1 - 1 / 6));
+  const damageB = Math.max(.001, strikeB * hitChance(b, a) / (1 - 1 / 6));
+  let attacksA = b.hp / damageA;
+  let attacksB = a.hp / damageB;
+  if (speedEnabled && a.speed !== b.speed) {
+    if (a.speed > b.speed) attacksA = Math.max(.05, (b.hp - damageA) / damageA);
+    else attacksB = Math.max(.05, (a.hp - damageB) / damageB);
+  }
+  const advantage = Math.log(Math.max(.001, attacksB) / Math.max(.001, attacksA));
+  return 100 / (1 + Math.exp(-advantage * 2.15));
+}
+
+function generatorShareMatrix(roster, drillEnabled = drillEffectEnabled, speedEnabled = speedEffectEnabled) {
+  const matrix = Array.from({ length: roster.length }, () => new Float64Array(roster.length));
+  for (let first = 0; first < roster.length; first += 1) {
+    matrix[first][first] = 50;
+    for (let second = first + 1; second < roster.length; second += 1) {
+      const share = estimateGeneratorMatchup(roster[first], roster[second], drillEnabled, speedEnabled);
+      matrix[first][second] = share;
+      matrix[second][first] = 100 - share;
+    }
+  }
+  return matrix;
+}
+
+function generatorRosterMetrics(roster) {
+  const matrix = generatorShareMatrix(roster);
+  const unitTotal = roster.length;
+  const averages = roster.map((_, index) => {
+    let total = 0;
+    for (let opponent = 0; opponent < unitTotal; opponent += 1) {
+      if (opponent !== index) total += matrix[index][opponent];
+    }
+    return total / Math.max(1, unitTotal - 1);
+  });
+  const balanceError = Math.sqrt(
+    averages.reduce((total, average) => total + (average - 50) ** 2, 0) / Math.max(1, unitTotal)
+  );
+
+  const clearAdvantage = generatorConfig.settings.clearAdvantage;
+  let coveredUnits = 0;
+  roster.forEach((_, index) => {
+    const shares = [...matrix[index]].filter((__, opponent) => opponent !== index);
+    if (shares.some(share => share >= clearAdvantage)
+      && shares.some(share => share <= 100 - clearAdvantage)) coveredUnits += 1;
+  });
+
+  const nearestDistances = new Array(unitTotal).fill(Infinity);
+  if (unitTotal >= 4) {
+    for (let first = 0; first < unitTotal; first += 1) {
+      for (let second = first + 1; second < unitTotal; second += 1) {
+        let squaredDifference = 0;
+        let comparisons = 0;
+        for (let opponent = 0; opponent < unitTotal; opponent += 1) {
+          if (opponent === first || opponent === second) continue;
+          const centredFirst = matrix[first][opponent] - averages[first];
+          const centredSecond = matrix[second][opponent] - averages[second];
+          squaredDifference += (centredFirst - centredSecond) ** 2;
+          comparisons += 1;
+        }
+        const distance = comparisons ? Math.sqrt(squaredDifference / comparisons) : 0;
+        nearestDistances[first] = Math.min(nearestDistances[first], distance);
+        nearestDistances[second] = Math.min(nearestDistances[second], distance);
+      }
+    }
+  }
+  const finiteDistances = nearestDistances.filter(Number.isFinite);
+  const roleSeparation = finiteDistances.length
+    ? finiteDistances.reduce((total, value) => total + value, 0) / finiteDistances.length
+    : 0;
+
+  let extremePairs = 0;
+  let polarityPenalty = 0;
+  const hardCounter = generatorConfig.settings.hardCounter;
+  for (let first = 0; first < unitTotal; first += 1) {
+    for (let second = first + 1; second < unitTotal; second += 1) {
+      const decisiveShare = Math.max(matrix[first][second], 100 - matrix[first][second]);
+      if (decisiveShare > hardCounter) {
+        extremePairs += 1;
+        polarityPenalty += (decisiveShare - hardCounter) / Math.max(1, 100 - hardCounter);
+      }
+    }
+  }
+  const pairTotal = Math.max(1, unitTotal * (unitTotal - 1) / 2);
+  polarityPenalty /= pairTotal;
+
+  let stabilityDifference = 0;
+  if (generatorConfig.objectives.stability > 0) {
+    const drillOff = generatorShareMatrix(roster, false, speedEffectEnabled);
+    const drillOn = generatorShareMatrix(roster, true, speedEffectEnabled);
+    const speedOff = generatorShareMatrix(roster, drillEffectEnabled, false);
+    const speedOn = generatorShareMatrix(roster, drillEffectEnabled, true);
+    for (let first = 0; first < unitTotal; first += 1) {
+      for (let second = first + 1; second < unitTotal; second += 1) {
+        stabilityDifference += Math.abs(drillOff[first][second] - drillOn[first][second]);
+        stabilityDifference += Math.abs(speedOff[first][second] - speedOn[first][second]);
+      }
+    }
+    stabilityDifference /= pairTotal * 2;
+  }
+
+  let changeTotal = 0;
+  let changeParts = 0;
+  roster.forEach((unit, index) => {
+    const original = units[index];
+    const constraint = generatorConstraintFor(original);
+    GENERATOR_STATS.forEach(stat => {
+      const range = constraint.stats[stat.id];
+      const scale = Math.max(1, Math.min(12, range.max - range.min));
+      changeTotal += Math.min(1, Math.abs(unit[stat.id] - original[stat.id]) / scale);
+      changeParts += 1;
+    });
+    changeTotal += unit.ap === original.ap ? 0 : 1;
+    changeParts += 1;
+  });
+  const changeDistance = changeTotal / Math.max(1, changeParts);
+
+  const tagSets = roster.map(unit => new Set(
+    parseGeneratorTags(generatorConstraintFor(unit).tags).map(tag => tag.toLowerCase())
+  ));
+  let intentPenalty = 0;
+  let intentCount = 0;
+  roster.forEach((unit, index) => {
+    const constraint = generatorConstraintFor(unit);
+    const goodAgainst = parseGeneratorTags(constraint.goodAgainst).map(tag => tag.toLowerCase());
+    const weakAgainst = parseGeneratorTags(constraint.weakAgainst).map(tag => tag.toLowerCase());
+    roster.forEach((_, opponent) => {
+      if (opponent === index) return;
+      if (goodAgainst.some(tag => tagSets[opponent].has(tag))) {
+        intentPenalty += Math.max(0, clearAdvantage - matrix[index][opponent]) / Math.max(1, clearAdvantage - 50);
+        intentCount += 1;
+      }
+      if (weakAgainst.some(tag => tagSets[opponent].has(tag))) {
+        intentPenalty += Math.max(0, matrix[index][opponent] - (100 - clearAdvantage)) / Math.max(1, clearAdvantage - 50);
+        intentCount += 1;
+      }
+    });
+  });
+  const intentScore = intentCount ? 1 - Math.min(1, intentPenalty / intentCount) : 1;
+
+  const components = {
+    balance: 1 - Math.min(1, balanceError / 25),
+    diversity: unitTotal >= 4 ? Math.min(1, roleSeparation / 24) : .5,
+    coverage: coveredUnits / Math.max(1, unitTotal),
+    polarity: 1 - Math.min(1, polarityPenalty + extremePairs / pairTotal * 2),
+    stability: 1 - Math.min(1, stabilityDifference / 20),
+    minimalChanges: 1 - Math.min(1, changeDistance)
+  };
+  const priorityWeight = [0, 1, 3, 6];
+  let weightedScore = 0;
+  let weightTotal = 0;
+  GENERATOR_OBJECTIVES.forEach(objective => {
+    const weight = priorityWeight[generatorConfig.objectives[objective.id]];
+    weightedScore += components[objective.id] * weight;
+    weightTotal += weight;
+  });
+  const intentWeight = intentCount ? 8 : 0;
+  const score = 100 * (weightedScore + intentScore * intentWeight) / Math.max(1, weightTotal + intentWeight);
+  return {
+    score,
+    balanceError,
+    roleSeparation,
+    coveredUnits,
+    extremePairs,
+    stabilityDifference,
+    changeDistance,
+    intentScore
+  };
+}
+
+function constrainedGeneratorSeed() {
+  return units.map(unit => {
+    const constraint = generatorConstraintFor(unit);
+    const candidate = { ...unit };
+    GENERATOR_STATS.forEach(stat => {
+      const range = constraint.stats[stat.id];
+      candidate[stat.id] = range.locked
+        ? unit[stat.id]
+        : Math.min(range.max, Math.max(range.min, unit[stat.id]));
+    });
+    if (constraint.ap === "on") candidate.ap = true;
+    else if (constraint.ap === "off") candidate.ap = false;
+    else if (constraint.ap === "locked") candidate.ap = unit.ap;
+    return candidate;
+  });
+}
+
+function generatorMutableFields() {
+  const fields = [];
+  units.forEach((unit, unitIndex) => {
+    const constraint = generatorConstraintFor(unit);
+    GENERATOR_STATS.forEach(stat => {
+      const range = constraint.stats[stat.id];
+      if (!range.locked && range.min < range.max) fields.push({ unitIndex, stat, range });
+    });
+    if (constraint.ap === "any") fields.push({ unitIndex, stat: { id: "ap" }, range: null });
+  });
+  return fields;
+}
+
+function mutateGeneratorRoster(source, mutableFields, mutationCount = 1) {
+  const roster = cloneUnits(source);
+  for (let mutation = 0; mutation < mutationCount; mutation += 1) {
+    const field = mutableFields[Math.floor(Math.random() * mutableFields.length)];
+    if (!field) break;
+    const unit = roster[field.unitIndex];
+    if (field.stat.id === "ap") {
+      unit.ap = !unit.ap;
+      continue;
+    }
+    const { min, max } = field.range;
+    const width = max - min;
+    let next;
+    if (Math.random() < .82) {
+      const step = Math.max(1, Math.ceil(Math.min(6, width) * Math.random()));
+      next = unit[field.stat.id] + (Math.random() < .5 ? -step : step);
+    } else {
+      next = min + Math.floor(Math.random() * (width + 1));
+    }
+    unit[field.stat.id] = Math.min(max, Math.max(min, next));
+  }
+  return roster;
+}
+
+function generatorRosterKey(roster) {
+  return roster.map(unit => `${unit.speed},${unit.drill},${unit.strike},${unit.defense},${unit.hp},${unit.ap ? 1 : 0}`).join("|");
+}
+
+async function generateRosterCandidates(onProgress, token) {
+  const seed = constrainedGeneratorSeed();
+  const mutableFields = generatorMutableFields();
+  const requested = generatorConfig.settings.candidateCount;
+  const poolSize = Math.max(24, requested * 7);
+  const iterations = Math.min(6000, 1400 + units.length * 260);
+  const seen = new Set();
+  const pool = [];
+  const consider = roster => {
+    const key = generatorRosterKey(roster);
+    if (seen.has(key)) return;
+    seen.add(key);
+    pool.push({ units: roster, metrics: generatorRosterMetrics(roster) });
+    pool.sort((a, b) => b.metrics.score - a.metrics.score);
+    if (pool.length > poolSize) pool.length = poolSize;
+  };
+  consider(seed);
+  if (!mutableFields.length) return pool.slice(0, 1);
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    if (token !== generatorRunToken) return [];
+    const base = Math.random() < .12
+      ? seed
+      : pool[Math.floor(Math.random() ** 2 * pool.length)].units;
+    const mutationCount = Math.random() < .7 ? 1 : 2 + Math.floor(Math.random() * Math.min(4, mutableFields.length));
+    consider(mutateGeneratorRoster(base, mutableFields, mutationCount));
+    if (iteration % 120 === 119) {
+      onProgress((iteration + 1) / iterations);
+      await new Promise(resolve => window.setTimeout(resolve, 0));
+    }
+  }
+  onProgress(1);
+
+  const distinct = [];
+  pool.forEach(candidate => {
+    const tooSimilar = distinct.some(existing => {
+      let differences = 0;
+      candidate.units.forEach((unit, index) => {
+        GENERATOR_STATS.forEach(stat => {
+          if (unit[stat.id] !== existing.units[index][stat.id]) differences += 1;
+        });
+        if (unit.ap !== existing.units[index].ap) differences += 1;
+      });
+      return differences < Math.max(1, Math.floor(units.length / 3));
+    });
+    if (!tooSimilar && distinct.length < requested) distinct.push(candidate);
+  });
+  pool.forEach(candidate => {
+    if (distinct.length < requested && !distinct.includes(candidate)) distinct.push(candidate);
+  });
+  return distinct.slice(0, requested);
+}
+
+function generatorCandidateChanges(roster) {
+  return roster.map((unit, index) => {
+    const original = units[index];
+    const changes = [];
+    GENERATOR_STATS.forEach(stat => {
+      if (unit[stat.id] !== original[stat.id]) changes.push(`${stat.label} ${original[stat.id]}→${unit[stat.id]}`);
+    });
+    if (unit.ap !== original.ap) changes.push(`AP ${unit.ap ? "on" : "off"}`);
+    return changes.length ? `${unit.name}: ${changes.join(" · ")}` : null;
+  }).filter(Boolean);
+}
+
+function renderGeneratorCandidates(view) {
+  const results = view.querySelector("[data-generator-results]");
+  results.replaceChildren();
+  results.hidden = !generatorCandidates.length;
+  if (!generatorCandidates.length) return;
+  const heading = createElement("div", "generator-results-heading");
+  const copy = createElement("div");
+  copy.append(
+    createElement("strong", "", "Generated candidates"),
+    createElement("span", "", "Scores are fast estimates; apply a roster to calculate its full outcome matrix.")
+  );
+  heading.append(copy, createElement("span", "generator-step", `04 · ${generatorCandidates.length} results`));
+  const list = createElement("div", "generator-candidate-list");
+  generatorCandidates.forEach((candidate, index) => {
+    const card = createElement("article", "generator-candidate");
+    const cardHeading = createElement("div", "generator-candidate-heading");
+    const rank = createElement("div", "generator-candidate-rank");
+    rank.append(
+      createElement("span", "", `#${index + 1}`),
+      createElement("strong", "", `${Math.round(candidate.metrics.score)} score`)
+    );
+    const applyButton = createElement("button", "generator-apply-button", "Apply roster");
+    applyButton.type = "button";
+    applyButton.dataset.action = "apply-generator-candidate";
+    applyButton.dataset.candidateIndex = String(index);
+    cardHeading.append(rank, applyButton);
+    const metrics = createElement("div", "generator-candidate-metrics");
+    [
+      ["Balance", `${formatMetric(candidate.metrics.balanceError)} pts`],
+      ["Role separation", `${formatMetric(candidate.metrics.roleSeparation)} pts`],
+      ["Coverage", `${candidate.metrics.coveredUnits}/${units.length}`],
+      ["Hard counters", String(candidate.metrics.extremePairs)]
+    ].forEach(([label, value]) => {
+      const metric = createElement("div");
+      metric.append(createElement("span", "", label), createElement("strong", "", value));
+      metrics.append(metric);
+    });
+    const changes = generatorCandidateChanges(candidate.units);
+    const changeList = createElement("div", "generator-candidate-changes");
+    if (changes.length) changes.forEach(change => changeList.append(createElement("span", "", change)));
+    else changeList.append(createElement("span", "", "No stat changes required."));
+    card.append(cardHeading, metrics, changeList);
+    list.append(card);
+  });
+  results.append(heading, list);
+}
+
+function renderGenerator() {
+  const view = createElement("div", "generator-view");
+  const toolbar = createElement("div", "visual-toolbar generator-toolbar");
+  const toolbarActions = createElement("div", "generator-toolbar-actions");
+  const generateButton = createElement("button", "generator-generate-button", "Generate candidates");
+  generateButton.type = "button";
+  generateButton.dataset.action = "generate-rosters";
+  toolbarActions.append(
+    createElement("span", "visual-toolbar-note", "Constraints save automatically"),
+    generateButton
+  );
+  toolbar.append(
+    createElement("span", "visual-toolbar-label", "Roster generator setup"),
+    toolbarActions
+  );
+  const runStatus = createElement("div", "generator-run-status");
+  runStatus.hidden = true;
+  const runStatusText = createElement("span", "", "Searching candidate rosters…");
+  const runProgress = createElement("div", "generator-run-progress");
+  runProgress.append(createElement("span"));
+  runStatus.append(runStatusText, runProgress);
+
+  const objectivesSection = createElement("section", "generator-section");
+  const objectivesHeading = createElement("div", "generator-section-heading");
+  const objectivesCopy = createElement("div");
+  objectivesCopy.append(
+    createElement("strong", "", "What should the generator optimize?"),
+    createElement("span", "", "Priorities are relative: High matters more than Medium or Low.")
+  );
+  objectivesHeading.append(objectivesCopy, createElement("span", "generator-step", "01 · objectives"));
+  const objectiveGrid = createElement("div", "generator-objectives");
+  GENERATOR_OBJECTIVES.forEach(objective => {
+    const card = createElement("label", "generator-objective");
+    card.dataset.objectiveId = objective.id;
+    card.dataset.priority = String(generatorConfig.objectives[objective.id]);
+    const copy = createElement("span", "generator-objective-copy");
+    copy.append(createElement("strong", "", objective.name), createElement("span", "", objective.description));
+    const select = createElement("select", "generator-priority");
+    select.dataset.generatorObjective = objective.id;
+    select.setAttribute("aria-label", `${objective.name} priority`);
+    appendSelectOptions(select, [[0, "Off"], [1, "Low"], [2, "Medium"], [3, "High"]], generatorConfig.objectives[objective.id]);
+    card.append(copy, select);
+    objectiveGrid.append(card);
+  });
+  objectivesSection.append(objectivesHeading, objectiveGrid);
+
+  const targetsSection = createElement("section", "generator-section");
+  const targetsHeading = createElement("div", "generator-section-heading");
+  const targetsCopy = createElement("div");
+  targetsCopy.append(
+    createElement("strong", "", "Define healthy matchup targets"),
+    createElement("span", "", "These values turn roster health into concrete optimization goals.")
+  );
+  targetsHeading.append(targetsCopy, createElement("span", "generator-step", "02 · targets"));
+  const targets = createElement("div", "generator-targets");
+  [
+    ["clearAdvantage", "Clear advantage", "Counts as a meaningful favourable or unfavourable matchup.", 51, 75, "%"],
+    ["hardCounter", "Hard-counter ceiling", "Penalize matchups more decisive than this.", 65, 95, "%"],
+    ["candidateCount", "Candidate rosters", "How many of the best alternatives to keep.", 3, 12, ""]
+  ].forEach(([id, label, description, min, max, suffix]) => {
+    const card = createElement("label", "generator-target");
+    const copy = createElement("span", "generator-target-copy");
+    copy.append(createElement("strong", "", label), createElement("span", "", description));
+    const control = createElement("span", "generator-number-control");
+    const input = createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = "1";
+    input.value = String(generatorConfig.settings[id]);
+    input.dataset.generatorSetting = id;
+    input.setAttribute("aria-label", label);
+    control.append(input);
+    if (suffix) control.append(createElement("span", "", suffix));
+    card.append(copy, control);
+    targets.append(card);
+  });
+  targetsSection.append(targetsHeading, targets);
+
+  const unitsSection = createElement("section", "generator-section generator-unit-section");
+  const unitsHeading = createElement("div", "generator-section-heading");
+  const unitsCopy = createElement("div");
+  unitsCopy.append(
+    createElement("strong", "", "Constrain individual units"),
+    createElement("span", "", "Use comma-separated role tags to express relationships such as anti-cavalry or vulnerable to ranged.")
+  );
+  unitsHeading.append(unitsCopy, createElement("span", "generator-step", "03 · units"));
+  const unitList = createElement("div", "generator-units");
+
+  units.forEach((unit, unitIndex) => {
+    const constraint = generatorConstraintFor(unit);
+    const details = createElement("details", "generator-unit");
+    details.dataset.unitId = unit.id;
+    details.open = unitIndex === 0;
+    const heading = createElement("summary", "generator-unit-heading");
+    const identity = createElement("span", "generator-unit-identity");
+    const dot = createElement("span", "unit-dot");
+    dot.style.setProperty("--dot-color", unit.color);
+    identity.append(dot, createElement("strong", "", unit.name));
+    const unitStatus = createElement("span", "generator-unit-status", generatorUnitStatus(unit, constraint));
+    unitStatus.dataset.generatorUnitStatus = "";
+    heading.append(identity, unitStatus, createElement("span", "generator-disclosure", "+"));
+
+    const body = createElement("div", "generator-unit-body");
+    const roleGrid = createElement("div", "generator-role-grid");
+    [
+      ["tags", "Role tags", "cavalry, mobile", "What this unit is"],
+      ["goodAgainst", "Should be good against", "infantry", "Matches other units' role tags"],
+      ["weakAgainst", "Should be vulnerable to", "anti-cavalry", "Matches other units' role tags"]
+    ].forEach(([field, label, placeholder, hint]) => {
+      const control = createElement("label", "generator-text-control");
+      control.append(createElement("span", "", label));
+      const input = createElement("input");
+      input.type = "text";
+      input.value = constraint[field];
+      input.placeholder = placeholder;
+      input.maxLength = 120;
+      input.dataset.generatorUnit = unit.id;
+      input.dataset.generatorField = field;
+      control.append(input, createElement("small", "", hint));
+      roleGrid.append(control);
+    });
+    const apControl = createElement("label", "generator-text-control generator-ap-control");
+    apControl.append(createElement("span", "", "Armour piercing"));
+    const apSelect = createElement("select");
+    apSelect.dataset.generatorUnit = unit.id;
+    apSelect.dataset.generatorField = "ap";
+    appendSelectOptions(apSelect, [
+      ["any", "Any value"],
+      ["on", "Must have AP"],
+      ["off", "Must not have AP"],
+      ["locked", `Keep current (${unit.ap ? "on" : "off"})`]
+    ], constraint.ap);
+    apControl.append(apSelect, createElement("small", "", "Allow, require, forbid, or preserve AP"));
+    roleGrid.append(apControl);
+
+    const statBlock = createElement("div", "generator-stat-block");
+    const statHeader = createElement("div", "generator-stat-header");
+    statHeader.append(
+      createElement("span", "", "Stat"),
+      createElement("span", "", "Minimum"),
+      createElement("span", "", "Maximum"),
+      createElement("span", "", "Keep current")
+    );
+    statBlock.append(statHeader);
+    GENERATOR_STATS.forEach(stat => {
+      const range = constraint.stats[stat.id];
+      const row = createElement("div", "generator-stat-row");
+      row.dataset.unitId = unit.id;
+      row.dataset.statId = stat.id;
+      const statName = createElement("span", "generator-stat-name");
+      statName.append(
+        createElement("strong", "", stat.label),
+        createElement("span", "", `${stat.name} · current ${unit[stat.id]}`)
+      );
+      const makeRangeInput = part => {
+        const input = createElement("input", "generator-range-input");
+        input.type = "number";
+        input.min = String(stat.min);
+        input.max = String(stat.max);
+        input.step = "1";
+        input.value = String(range[part]);
+        input.dataset.generatorUnit = unit.id;
+        input.dataset.generatorStat = stat.id;
+        input.dataset.generatorPart = part;
+        input.setAttribute("aria-label", `${unit.name} ${stat.name} ${part}`);
+        return input;
+      };
+      const lockLabel = createElement("label", "generator-lock-control");
+      const lockInput = createElement("input");
+      lockInput.type = "checkbox";
+      lockInput.checked = range.locked;
+      lockInput.dataset.generatorUnit = unit.id;
+      lockInput.dataset.generatorStat = stat.id;
+      lockInput.dataset.generatorPart = "locked";
+      lockInput.setAttribute("aria-label", `Keep ${unit.name} ${stat.name} at ${unit[stat.id]}`);
+      lockLabel.append(lockInput, createElement("span", "", "Lock"));
+      row.append(statName, makeRangeInput("min"), makeRangeInput("max"), lockLabel);
+      statBlock.append(row);
+    });
+    const statNote = createElement("p", "generator-stat-note", "Ranges are inclusive whole numbers. Locking a stat keeps its current value.");
+    body.append(roleGrid, statBlock, statNote);
+    details.append(heading, body);
+    unitList.append(details);
+  });
+  unitsSection.append(unitsHeading, unitList);
+
+  const summary = createElement("div", "generator-summary");
+  summary.dataset.generatorSummary = "";
+  const summaryMark = createElement("span", "generator-summary-mark", "✓");
+  const summaryCopy = createElement("div");
+  const summaryTitle = createElement("strong");
+  summaryTitle.dataset.generatorSummaryTitle = "";
+  const summaryText = createElement("span");
+  summaryText.dataset.generatorSummaryText = "";
+  summaryCopy.append(summaryTitle, summaryText);
+  summary.append(summaryMark, summaryCopy);
+
+  const generatedResults = createElement("section", "generator-section generator-results");
+  generatedResults.dataset.generatorResults = "";
+  generatedResults.hidden = true;
+
+  view.append(toolbar, runStatus, objectivesSection, targetsSection, unitsSection, summary, generatedResults);
+  resultStage.replaceChildren(view);
+
+  const handleControl = target => {
+    if (target.dataset.generatorObjective) {
+      generatorConfig.objectives[target.dataset.generatorObjective] = safeNumber(target.value, 0, 0, 3);
+    } else if (target.dataset.generatorSetting) {
+      const limits = {
+        clearAdvantage: [51, 75],
+        hardCounter: [65, 95],
+        candidateCount: [3, 12]
+      };
+      const id = target.dataset.generatorSetting;
+      const [min, max] = limits[id];
+      generatorConfig.settings[id] = safeNumber(target.value, generatorConfig.settings[id], min, max);
+      target.value = String(generatorConfig.settings[id]);
+    } else if (target.dataset.generatorField) {
+      const unit = units.find(item => item.id === target.dataset.generatorUnit);
+      if (!unit) return;
+      const constraint = generatorConstraintFor(unit);
+      constraint[target.dataset.generatorField] = target.value.slice(0, 120);
+    } else if (target.dataset.generatorStat) {
+      const unit = units.find(item => item.id === target.dataset.generatorUnit);
+      const stat = GENERATOR_STATS.find(item => item.id === target.dataset.generatorStat);
+      if (!unit || !stat) return;
+      const range = generatorConstraintFor(unit).stats[stat.id];
+      if (target.dataset.generatorPart === "locked") {
+        range.locked = target.checked;
+      } else {
+        const part = target.dataset.generatorPart;
+        range[part] = safeNumber(target.value, range[part], stat.min, stat.max);
+        target.value = String(range[part]);
+      }
+    } else {
+      return;
+    }
+    generatorRunToken += 1;
+    generatorCandidates = [];
+    runStatus.hidden = true;
+    generateButton.dataset.running = "false";
+    generateButton.textContent = "Generate candidates";
+    renderGeneratorCandidates(view);
+    saveGeneratorConfig();
+    updateGeneratorView(view);
+  };
+
+  view.addEventListener("input", event => {
+    if (event.target.dataset.generatorField && event.target.tagName === "INPUT") handleControl(event.target);
+  });
+  view.addEventListener("change", event => handleControl(event.target));
+  view.addEventListener("click", async event => {
+    const action = event.target.closest("[data-action]")?.dataset.action;
+    if (action === "generate-rosters") {
+      const validation = generatorValidation();
+      const blocked = validation.invalidRanges
+        || validation.targetConflict
+        || validation.unknownTags.size
+        || !validation.activeObjectives;
+      if (blocked || generateButton.dataset.running === "true") return;
+      const token = ++generatorRunToken;
+      generatorCandidates = [];
+      renderGeneratorCandidates(view);
+      generateButton.dataset.running = "true";
+      generateButton.disabled = true;
+      generateButton.textContent = "Generating…";
+      runStatus.hidden = false;
+      runStatusText.textContent = "Searching candidate rosters…";
+      runProgress.firstElementChild.style.width = "0%";
+      try {
+        const candidates = await generateRosterCandidates(progress => {
+          if (token !== generatorRunToken || !view.isConnected) return;
+          runProgress.firstElementChild.style.width = `${Math.round(progress * 100)}%`;
+          runStatusText.textContent = `Searching candidate rosters… ${Math.round(progress * 100)}%`;
+        }, token);
+        if (token !== generatorRunToken || !view.isConnected) return;
+        generatorCandidates = candidates;
+        renderGeneratorCandidates(view);
+        runStatusText.textContent = candidates.length
+          ? `Finished · ${candidates.length} candidate roster${candidates.length === 1 ? "" : "s"}`
+          : "No candidate roster could be generated from these constraints.";
+      } catch (error) {
+        if (token === generatorRunToken && view.isConnected) {
+          runStatusText.textContent = "Generation stopped unexpectedly. Your roster was not changed.";
+          console.error(error);
+        }
+      } finally {
+        if (token === generatorRunToken && view.isConnected) {
+          generateButton.dataset.running = "false";
+          generateButton.disabled = false;
+          generateButton.textContent = "Generate again";
+          updateGeneratorView(view);
+        }
+      }
+    } else if (action === "apply-generator-candidate") {
+      const candidateIndex = Number(event.target.closest("[data-candidate-index]")?.dataset.candidateIndex);
+      const candidate = generatorCandidates[candidateIndex];
+      if (!candidate) return;
+      generatorRunToken += 1;
+      units = sanitiseUnits(candidate.units);
+      shownUnits = cloneUnits(units);
+      matchupCache.clear();
+      saveUnits();
+      generatorCandidates = [];
+      renderEditor();
+      renderResults();
+      setUpdating(false);
+    }
+  });
+  renderGeneratorCandidates(view);
+  updateGeneratorView(view);
 }
 
 function renderCounters() {
@@ -2078,7 +3284,9 @@ function renderProfile() {
 
 function renderResults() {
   const matchupCount = shownUnits.length * (shownUnits.length - 1);
-  resultsMeta.textContent = `${shownUnits.length} units · ${matchupCount} displayed matchups`;
+  resultsMeta.textContent = activeView === "generator"
+    ? `${units.length} units · constraints and objectives`
+    : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
   outcomeKey.hidden = activeView !== "bars";
 
   viewButtons.forEach(button => {
@@ -2089,6 +3297,8 @@ function renderResults() {
 
   if (activeView === "matrix") renderMatrix();
   else if (activeView === "similarity") renderSimilarity();
+  else if (activeView === "health") renderHealth();
+  else if (activeView === "generator") renderGenerator();
   else if (activeView === "counters") renderCounters();
   else if (activeView === "profile") renderProfile();
   else renderBars();
@@ -2185,9 +3395,12 @@ unitGrid.addEventListener("click", event => {
     }
   });
   matrixCustomOrder = matrixCustomOrder.filter(id => id !== removedId);
+  delete generatorConfig.units[removedId];
+  deleteCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${removedId}`);
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
+  saveGeneratorConfig();
   renderEditor();
   updateResults(true);
 });
@@ -2208,6 +3421,7 @@ addUnitButton.addEventListener("click", () => {
     color: colour
   });
   saveUnits();
+  syncGeneratorConfigToUnits();
   renderEditor();
   updateResults(true);
   unitGrid.lastElementChild?.querySelector('[data-field="name"]')?.select();
@@ -2223,6 +3437,7 @@ resetButton.addEventListener("click", () => {
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
+  syncGeneratorConfigToUnits();
   renderEditor();
   renderResults();
   setUpdating(false);
