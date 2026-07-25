@@ -59,9 +59,8 @@ const GENERATOR_STATS = [
 
 const COMBAT_SCENARIOS = [
   { id: "neutral", label: "Neutral", shortLabel: "N", modifier: 0, description: "No positional STR modifier" },
-  { id: "high-ground", label: "High ground", shortLabel: "HG", modifier: 1, description: "Row +1 STR · column −1 STR" },
-  { id: "outflanking", label: "Outflanking", shortLabel: "OF", modifier: 1, description: "Row +1 STR · column −1 STR" },
-  { id: "height-flank", label: "Height + flank", shortLabel: "H+F", modifier: 2, description: "Row +2 STR · column −2 STR" }
+  { id: "one-advantage", label: "1 advantage", shortLabel: "1A", modifier: 1, description: "Row +1 STR · column −1 STR" },
+  { id: "two-advantages", label: "2 advantages", shortLabel: "2A", modifier: 2, description: "Row +2 STR · column −2 STR" }
 ];
 
 const unitGrid = document.querySelector("#unitGrid");
@@ -1722,7 +1721,7 @@ function renderMatrix() {
   const scenarioToolbar = createElement("div", "visual-toolbar scenario-toolbar");
   const scenarioControl = createElement("div", "mini-switcher scenario-switcher");
   [
-    { id: "compare", label: "Compare 4", description: "Show all four expected outcomes in every matrix cell" },
+    { id: "compare", label: "Compare 3", description: "Show all three expected outcomes in every matrix cell" },
     ...COMBAT_SCENARIOS
   ].forEach(scenario => {
     const button = createElement("button", matrixScenario === scenario.id ? "active" : "", scenario.label);
@@ -1743,7 +1742,7 @@ function renderMatrix() {
       "span",
       "visual-toolbar-note",
       matrixScenario === "compare"
-        ? "Every cell: Neutral · High ground · Outflanking · Height + flank"
+        ? "Every cell: Neutral · 1 advantage · 2 advantages"
         : matrixScenarioById(matrixScenario).description
     )
   );
@@ -1785,7 +1784,7 @@ function renderMatrix() {
       matrixSort === "custom"
         ? "Drag row handles to reorder"
         : matrixScenario === "compare"
-          ? "Cell: N / HG / OF / H+F win % · small number is change vs Neutral"
+          ? "Cell: N / 1A / 2A win % · small number is change vs Neutral"
           : "Cell: row win chance · expected rounds · change vs Neutral"
     )
   );
@@ -1805,6 +1804,7 @@ function renderMatrix() {
     ? COMBAT_SCENARIOS.slice(1)
     : [activeScenario];
   impact.classList.toggle("single", impactScenarios.length === 1);
+  impact.classList.toggle("double", impactScenarios.length === 2);
   impactScenarios.forEach(scenario => {
     const metrics = matrixScenarioImpact(matrixUnits, scenario);
     const item = createElement("div", "matrix-impact-item");
@@ -1815,7 +1815,7 @@ function renderMatrix() {
       createElement(
         "span",
         "matrix-impact-detail",
-        `${scenario.id === "outflanking" ? "Same +1/−1 model · " : ""}${metrics.flips} winner flip${metrics.flips === 1 ? "" : "s"} · max ${formatPercentagePointDelta(metrics.largestDelta, 1)} pp`
+        `${metrics.flips} winner flip${metrics.flips === 1 ? "" : "s"} · max ${formatPercentagePointDelta(metrics.largestDelta, 1)} pp`
       )
     );
     impact.append(item);
@@ -3504,7 +3504,7 @@ function renderResults() {
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
-      ? `${shownUnits.length} units · ${matchupCount} matchups · 4 scenarios`
+      ? `${shownUnits.length} units · ${matchupCount} matchups · 3 scenarios`
       : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
   outcomeKey.hidden = activeView !== "bars";
 

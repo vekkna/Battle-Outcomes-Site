@@ -1273,6 +1273,10 @@ h2 {
   grid-template-columns: 1fr;
 }
 
+.matrix-impact.double {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .matrix-impact-item {
   min-width: 0;
   display: grid;
@@ -1475,7 +1479,7 @@ h2 {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   padding: 3px;
 }
@@ -2868,5 +2872,6 @@ h2 {
   .generator-stat-header,
   .generator-stat-row { min-width: 390px; }
   .similarity-caption { align-items: flex-start; flex-direction: column; gap: 2px; }
-  .matrix-impact { grid-template-columns: 1fr; }
+  .matrix-impact,
+  .matrix-impact.double { grid-template-columns: 1fr; }
 }
