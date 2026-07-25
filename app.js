@@ -1,3 +1,14 @@
+import {
+  DEFAULT_BATTLEFIELD_SETTINGS,
+  accessibleChargeBands,
+  battlefieldSettingsKey,
+  drillConversionChance,
+  normaliseBattlefieldSettings,
+  resolveBattlefieldMatchup,
+  resolveRulesMatchup,
+  speedInitiativeShare
+} from "./combat-engine.js";
+
 const STORAGE_KEY = "matchup-board-units-v1";
 const STORAGE_COOKIE = "matchup-board-units-v1";
 const RECOVERY_KEY = "matchup-board-roster-recovered-2026-07-18";
@@ -6,11 +17,11 @@ const MATCHUP_ORDER_KEY = "matchup-board-matchup-orders-v1";
 const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
 const MATRIX_SCENARIO_KEY = "matchup-board-matrix-scenario-v1";
 const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
+const MATRIX_MODE_KEY = "matchup-board-matrix-mode-v1";
+const BATTLEFIELD_SETTINGS_KEY = "matchup-board-battlefield-settings-v1";
 const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const UNIT_SETS_KEY = "matchup-board-unit-sets-v1";
 const UNIT_SET_COOKIE_PREFIX = "matchup-board-unit-set-v1-";
-const DRILL_EFFECT_KEY = "matchup-board-drill-effect-v1";
-const SPEED_EFFECT_KEY = "matchup-board-speed-effect-v1";
 const SIMILARITY_METRIC_KEY = "matchup-board-similarity-metric-v1";
 const GENERATOR_CONFIG_KEY = "matchup-board-generator-config-v1";
 const GENERATOR_UNIT_COOKIE_PREFIX = "matchup-board-generator-unit-v1-";
@@ -45,7 +56,7 @@ const GENERATOR_OBJECTIVES = [
   { id: "diversity", name: "Role diversity", description: "Separate centred matchup profiles while respecting the hard-counter limit." },
   { id: "coverage", name: "Counter coverage", description: "Give every unit at least one clear favourable and unfavourable matchup." },
   { id: "polarity", name: "Limit hard counters", description: "Penalize matchup results beyond the selected maximum advantage." },
-  { id: "stability", name: "Rule stability", description: "Reduce excessive dependence on the Drill and Speed effects." },
+  { id: "stability", name: "Model stability", description: "Reduce excessive dependence on provisional battlefield openings." },
   { id: "minimalChanges", name: "Minimal stat changes", description: "Prefer candidates that stay close to the current roster." }
 ];
 
@@ -75,8 +86,6 @@ const setSaveForm = document.querySelector("#setSaveForm");
 const setName = document.querySelector("#setName");
 const setList = document.querySelector("#setList");
 const setEmpty = document.querySelector("#setEmpty");
-const drillEffectToggle = document.querySelector("#drillEffectToggle");
-const speedEffectToggle = document.querySelector("#speedEffectToggle");
 const saveState = document.querySelector("#saveState");
 const resultStage = document.querySelector("#resultStage");
 const resultsMeta = document.querySelector("#resultsMeta");
@@ -91,9 +100,9 @@ let activeView = loadView();
 let matrixSort = loadMatrixSort();
 let matrixScenario = loadMatrixScenario();
 let matrixCustomOrder = loadMatrixCustomOrder();
+let matrixMode = loadMatrixMode();
+let battlefieldSettings = loadBattlefieldSettings();
 let counterThreshold = loadCounterThreshold();
-let drillEffectEnabled = loadDrillEffect();
-let speedEffectEnabled = loadSpeedEffect();
 let similarityMetric = loadSimilarityMetric();
 let matchupCache = new Map();
 let updateTimer = null;
@@ -507,42 +516,46 @@ function loadCounterThreshold() {
   return [60, 65, 70, 75, 80].includes(saved) ? saved : 80;
 }
 
-function loadDrillEffect() {
+function loadMatrixMode() {
   try {
-    const saved = readCookieValue(DRILL_EFFECT_KEY) ?? localStorage.getItem(DRILL_EFFECT_KEY);
-    return saved === null ? true : saved === "1";
+    const saved = readCookieValue(MATRIX_MODE_KEY) ?? localStorage.getItem(MATRIX_MODE_KEY);
+    return saved === "battlefield" ? "battlefield" : "combat";
   } catch (_) {
-    return true;
+    return "combat";
   }
 }
 
-function saveDrillEffect() {
-  const value = drillEffectEnabled ? "1" : "0";
+function saveMatrixMode() {
   try {
-    localStorage.setItem(DRILL_EFFECT_KEY, value);
+    localStorage.setItem(MATRIX_MODE_KEY, matrixMode);
   } catch (_) {
-    // The toggle still works for the current session.
+    // The selected mode still works for the current session.
   }
-  writeCookieValue(DRILL_EFFECT_KEY, value);
+  writeCookieValue(MATRIX_MODE_KEY, matrixMode);
 }
 
-function loadSpeedEffect() {
+function loadBattlefieldSettings() {
+  let saved = null;
   try {
-    const saved = readCookieValue(SPEED_EFFECT_KEY) ?? localStorage.getItem(SPEED_EFFECT_KEY);
-    return saved === null ? true : saved === "1";
+    saved = JSON.parse(
+      readCookieValue(BATTLEFIELD_SETTINGS_KEY)
+      ?? localStorage.getItem(BATTLEFIELD_SETTINGS_KEY)
+      ?? "null"
+    );
   } catch (_) {
-    return true;
+    // Use the provisional defaults when stored settings are unavailable.
   }
+  return normaliseBattlefieldSettings(saved);
 }
 
-function saveSpeedEffect() {
-  const value = speedEffectEnabled ? "1" : "0";
+function saveBattlefieldSettings() {
+  const value = JSON.stringify(battlefieldSettings);
   try {
-    localStorage.setItem(SPEED_EFFECT_KEY, value);
+    localStorage.setItem(BATTLEFIELD_SETTINGS_KEY, value);
   } catch (_) {
-    // The toggle still works for the current session.
+    // Cookie persistence may still be available.
   }
-  writeCookieValue(SPEED_EFFECT_KEY, value);
+  writeCookieValue(BATTLEFIELD_SETTINGS_KEY, value);
 }
 
 function saveUnits() {
@@ -870,12 +883,8 @@ function expectedAttackTurnsToKill(hitDistribution, hp) {
 }
 
 function effectiveStrikes(a, b, combatModifier = 0) {
-  let drillAdjustmentA = 0;
-  let drillAdjustmentB = 0;
-  if (drillEffectEnabled && a.drill !== b.drill) {
-    if (a.drill > b.drill) drillAdjustmentA = 1;
-    else drillAdjustmentB = 1;
-  }
+  const drillAdjustmentA = 0;
+  const drillAdjustmentB = 0;
   const combatAdjustmentA = combatModifier;
   const combatAdjustmentB = -combatModifier;
   const adjustmentA = drillAdjustmentA + combatAdjustmentA;
@@ -893,17 +902,16 @@ function effectiveStrikes(a, b, combatModifier = 0) {
 }
 
 function speedAttackerFor(a, b) {
-  if (!speedEffectEnabled || a.speed === b.speed) return null;
-  return a.speed > b.speed ? "a" : "b";
+  return null;
 }
 
-function matchupKey(a, b, combatModifier = 0) {
+function legacyMatchupKey(a, b, combatModifier = 0) {
   const unitKey = unit => [unit.id, unit.strike, unit.drill, unit.speed, unit.ap ? 1 : 0, unit.defense, unit.hp].join(":");
-  return `${drillEffectEnabled ? 1 : 0}:${speedEffectEnabled ? 1 : 0}:${combatModifier}|${unitKey(a)}|${unitKey(b)}`;
+  return `rules-only:${combatModifier}|${unitKey(a)}|${unitKey(b)}`;
 }
 
-function getMatchup(a, b, combatModifier = 0) {
-  const key = matchupKey(a, b, combatModifier);
+function getLegacyMatchup(a, b, combatModifier = 0) {
+  const key = legacyMatchupKey(a, b, combatModifier);
   const cached = matchupCache.get(key);
   if (cached) return cached;
 
@@ -1184,8 +1192,39 @@ function getMatchup(a, b, combatModifier = 0) {
   };
 
   matchupCache.set(key, result);
-  matchupCache.set(matchupKey(b, a, -combatModifier), reverse);
+  matchupCache.set(legacyMatchupKey(b, a, -combatModifier), reverse);
   return result;
+}
+
+function matchupKey(a, b, combatModifier = 0, mode = "combat") {
+  const unitKey = unit => [
+    unit.id,
+    unit.strike,
+    unit.drill,
+    unit.speed,
+    unit.ap ? 1 : 0,
+    unit.defense,
+    unit.hp
+  ].join(":");
+  const settingsPart = mode === "battlefield"
+    ? battlefieldSettingsKey(battlefieldSettings)
+    : "rules-only";
+  return `${mode}:${settingsPart}:${combatModifier}|${unitKey(a)}|${unitKey(b)}`;
+}
+
+function getMatchup(a, b, combatModifier = 0, mode = "combat") {
+  const key = matchupKey(a, b, combatModifier, mode);
+  const cached = matchupCache.get(key);
+  if (cached) return cached;
+  const matchup = mode === "battlefield"
+    ? resolveBattlefieldMatchup(a, b, combatModifier, battlefieldSettings)
+    : resolveRulesMatchup(a, b, combatModifier);
+  matchupCache.set(key, matchup);
+  return matchup;
+}
+
+function getMatrixMatchup(a, b, combatModifier = 0) {
+  return getMatchup(a, b, combatModifier, matrixMode);
 }
 
 function hitTarget(attacker, defender) {
@@ -1206,9 +1245,10 @@ function matchupStrikeText(unit, effectiveStrike, drillAdjustment, combatAdjustm
 }
 
 function matchupInitiativeText(matchup) {
-  if (!matchup.speedAttacker) return "Battle values average both possible attack orders.";
-  const attacker = matchup.speedAttacker === "a" ? matchup.a : matchup.b;
-  return `${attacker.name} makes one free opening attack due to higher Speed; the remaining fight averages both possible attack orders.`;
+  if (matchup.mode === "battlefield") {
+    return "Battlefield estimate weights neutral, frontal-charge and flank-charge openings; Speed affects charge control and Drill affects flank conversion.";
+  }
+  return "Rules-only combat averages both possible attack orders; Speed and Drill do not alter combat power.";
 }
 
 function matchupTitle(matchup) {
@@ -1616,7 +1656,7 @@ function matrixScenarioById(id) {
 function matrixScenarioMatchups(rowUnit, opponent) {
   return COMBAT_SCENARIOS.map(scenario => ({
     scenario,
-    matchup: getMatchup(rowUnit, opponent, scenario.modifier)
+    matchup: getMatrixMatchup(rowUnit, opponent, scenario.modifier)
   }));
 }
 
@@ -1638,8 +1678,8 @@ function matrixScenarioImpact(matrixUnits, scenario) {
   matrixUnits.forEach(rowUnit => {
     matrixUnits.forEach(opponent => {
       if (rowUnit.id === opponent.id) return;
-      const neutral = getMatchup(rowUnit, opponent);
-      const modified = getMatchup(rowUnit, opponent, scenario.modifier);
+      const neutral = getMatrixMatchup(rowUnit, opponent);
+      const modified = getMatrixMatchup(rowUnit, opponent, scenario.modifier);
       const delta = modified.shareA - neutral.shareA;
       totalDelta += delta;
       largestDelta = Math.max(largestDelta, Math.abs(delta));
@@ -1653,6 +1693,157 @@ function matrixScenarioImpact(matrixUnits, scenario) {
     flips,
     matchupCount
   };
+}
+
+function updateBattlefieldSettings(change) {
+  change(battlefieldSettings);
+  battlefieldSettings = normaliseBattlefieldSettings(battlefieldSettings);
+  saveBattlefieldSettings();
+  matchupCache.clear();
+  renderMatrix();
+}
+
+function createPercentageSetting(label, value, onChange, title = "") {
+  const control = createElement("label", "battlefield-setting");
+  if (title) control.title = title;
+  const name = createElement("span", "", label);
+  const valueWrap = createElement("span", "battlefield-setting-value");
+  const input = createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.max = "100";
+  input.step = "1";
+  input.inputMode = "decimal";
+  input.value = String(Math.round(value * 1000) / 10);
+  input.addEventListener("change", () => {
+    const next = Math.min(100, Math.max(0, Number(input.value) || 0)) / 100;
+    onChange(next);
+  });
+  valueWrap.append(input, createElement("span", "", "%"));
+  control.append(name, valueWrap);
+  return control;
+}
+
+function renderBattlefieldSettingsPanel() {
+  const panel = createElement("details", "battlefield-settings");
+  const summary = createElement("summary");
+  const summaryText = createElement("span", "battlefield-settings-summary");
+  summaryText.append(
+    createElement("strong", "", "Battlefield assumptions"),
+    createElement(
+      "span",
+      "",
+      `${Math.round((1 - battlefieldSettings.noChargeChance) * 100)}% charge · ${Math.round(battlefieldSettings.flankOpportunityRate * 100)}% flank opportunity`
+    )
+  );
+  summary.append(summaryText, createElement("span", "battlefield-settings-chevron", "⌄"));
+  panel.append(summary);
+
+  const note = createElement(
+    "p",
+    "battlefield-settings-note",
+    "Provisional modelling frequencies—not literal combat rules. Charge bonuses apply only to the opening attack; a flank lasts for the opening attack and immediate reply."
+  );
+  const grid = createElement("div", "battlefield-settings-grid");
+
+  const openingGroup = createElement("section", "battlefield-settings-group");
+  openingGroup.append(
+    createElement("strong", "", "Opening access"),
+    createPercentageSetting(
+      "No meaningful charge",
+      battlefieldSettings.noChargeChance,
+      next => updateBattlefieldSettings(settings => { settings.noChargeChance = next; }),
+      "The remaining probability is split between the two units using the Speed-control bands."
+    ),
+    createPercentageSetting(
+      "Flank opportunity",
+      battlefieldSettings.flankOpportunityRate,
+      next => updateBattlefieldSettings(settings => { settings.flankOpportunityRate = next; }),
+      "Multiplied by the charger's Drill conversion chance."
+    )
+  );
+
+  const distanceGroup = createElement("section", "battlefield-settings-group");
+  distanceGroup.append(createElement("strong", "", "Charge-distance weights"));
+  battlefieldSettings.chargeDistanceBands.forEach((band, index) => {
+    distanceGroup.append(createPercentageSetting(
+      `${band.label} · +${band.bonus}`,
+      band.weight,
+      next => updateBattlefieldSettings(settings => {
+        settings.chargeDistanceBands[index].weight = next;
+      }),
+      `Available at Speed ${band.minSpeed}+; eligible weights are renormalized for each charger.`
+    ));
+  });
+
+  const speedGroup = createElement("section", "battlefield-settings-group");
+  speedGroup.append(createElement("strong", "", "Faster unit initiates"));
+  const equalSpeed = createElement("div", "battlefield-setting");
+  equalSpeed.title = "Equal Speed splits charge control evenly so swapping the two units remains complementary.";
+  equalSpeed.append(
+    createElement("span", "", "Equal Speed"),
+    createElement("span", "battlefield-setting-fixed", "50%")
+  );
+  speedGroup.append(equalSpeed);
+  [
+    ["Difference 1–2", "oneToTwo", "Conditional chance that the faster unit initiates."],
+    ["Difference 3–5", "threeToFive", "Conditional chance that the faster unit initiates."],
+    ["Difference 6+", "sixPlus", "Conditional chance that the faster unit initiates."]
+  ].forEach(([label, key, title]) => {
+    speedGroup.append(createPercentageSetting(
+      label,
+      battlefieldSettings.speedControl[key],
+      next => updateBattlefieldSettings(settings => { settings.speedControl[key] = next; }),
+      title
+    ));
+  });
+
+  const drillGroup = createElement("section", "battlefield-settings-group");
+  drillGroup.append(createElement("strong", "", "Drill flank conversion"));
+  [
+    ["−3 or less", "minusThree"],
+    ["−2", "minusTwo"],
+    ["−1", "minusOne"],
+    ["Equal", "equal"],
+    ["+1", "plusOne"],
+    ["+2", "plusTwo"],
+    ["+3 or more", "plusThree"]
+  ].forEach(([label, key]) => {
+    drillGroup.append(createPercentageSetting(
+      label,
+      battlefieldSettings.drillConversion[key],
+      next => updateBattlefieldSettings(settings => { settings.drillConversion[key] = next; }),
+      "Multiplied by the flank-opportunity rate after this unit initiates a charge."
+    ));
+  });
+
+  grid.append(openingGroup, distanceGroup, speedGroup, drillGroup);
+  const footer = createElement("div", "battlefield-settings-footer");
+  const reset = createElement("button", "button button-quiet", "Reset defaults");
+  reset.type = "button";
+  reset.addEventListener("click", event => {
+    event.preventDefault();
+    battlefieldSettings = normaliseBattlefieldSettings(DEFAULT_BATTLEFIELD_SETTINGS);
+    saveBattlefieldSettings();
+    matchupCache.clear();
+    renderMatrix();
+  });
+  footer.append(
+    createElement("span", "", "Eligible distance weights are automatically renormalized to 100%."),
+    reset
+  );
+  panel.append(note, grid, footer);
+  return panel;
+}
+
+function battlefieldBreakdownText(matchup) {
+  if (matchup.mode !== "battlefield" || !Array.isArray(matchup.openingStates)) return "";
+  const lines = matchup.openingStates.map(state => {
+    const probability = (state.probability * 100).toFixed(1);
+    const conditional = state.shareA === null ? "unavailable" : `${state.shareA.toFixed(1)}% row win`;
+    return `${state.label}: ${probability}% of openings · ${conditional}`;
+  });
+  return `\nWeighted opening breakdown:\n${lines.join("\n")}`;
 }
 
 function enableMatrixRowSorting(grid) {
@@ -1718,6 +1909,35 @@ function enableMatrixRowSorting(grid) {
 function renderMatrix() {
   const view = createElement("div", "matrix-view");
   const controls = createElement("div", "matrix-controls");
+  const modeToolbar = createElement("div", "visual-toolbar matrix-mode-toolbar");
+  const modeControl = createElement("div", "mini-switcher matrix-mode-switcher");
+  [
+    ["combat", "Combat matrix", "Exact rules-only engagement using STR, DEF, AP and HP; Speed and Drill are ignored."],
+    ["battlefield", "Battlefield estimate", "Weighted provisional openings: Speed controls charge access and Drill controls flank conversion."]
+  ].forEach(([value, label, description]) => {
+    const button = createElement("button", matrixMode === value ? "active" : "", label);
+    button.type = "button";
+    button.title = description;
+    button.setAttribute("aria-pressed", String(matrixMode === value));
+    button.addEventListener("click", () => {
+      matrixMode = value;
+      saveMatrixMode();
+      matchupCache.clear();
+      renderMatrix();
+    });
+    modeControl.append(button);
+  });
+  modeToolbar.append(
+    createElement("span", "visual-toolbar-label", "Calculation"),
+    modeControl,
+    createElement(
+      "span",
+      "visual-toolbar-note",
+      matrixMode === "combat"
+        ? "Exact rules only · Speed and Drill ignored"
+        : "Provisional weighted charge and flank assumptions"
+    )
+  );
   const scenarioToolbar = createElement("div", "visual-toolbar scenario-toolbar");
   const scenarioControl = createElement("div", "mini-switcher scenario-switcher");
   [
@@ -1788,14 +2008,15 @@ function renderMatrix() {
           : "Cell: row win chance · expected rounds · change vs Neutral"
     )
   );
-  controls.append(scenarioToolbar, toolbar);
+  controls.append(modeToolbar, scenarioToolbar, toolbar);
+  if (matrixMode === "battlefield") controls.append(renderBattlefieldSettingsPanel());
 
   const matrixUnits = matrixUnitOrder();
   const activeScenario = matrixScenario === "compare" ? COMBAT_SCENARIOS[0] : matrixScenarioById(matrixScenario);
   const strengths = new Map(matrixUnits.map(unit => {
     const matchups = matrixUnits
       .filter(opponent => opponent.id !== unit.id)
-      .map(opponent => getMatchup(unit, opponent, activeScenario.modifier));
+      .map(opponent => getMatrixMatchup(unit, opponent, activeScenario.modifier));
     return [unit.id, averageShare(matchups)];
   }));
 
@@ -1859,8 +2080,8 @@ function renderMatrix() {
         return;
       }
 
-      const neutral = getMatchup(rowUnit, opponent);
-      const matchup = getMatchup(rowUnit, opponent, activeScenario.modifier);
+      const neutral = getMatrixMatchup(rowUnit, opponent);
+      const matchup = getMatrixMatchup(rowUnit, opponent, activeScenario.modifier);
       const cell = createElement("div", "matrix-cell");
       cell.dataset.matrixRowId = rowUnit.id;
       if (matrixScenario === "compare") {
@@ -1905,9 +2126,9 @@ function renderMatrix() {
       cell.style.setProperty("--share", `${matchup.shareA}%`);
       cell.title = matrixScenario === "compare"
         ? matrixScenarioMatchups(rowUnit, opponent)
-          .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}`)
+          .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}${battlefieldBreakdownText(scenarioMatchup)}`)
           .join("\n")
-        : `${activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeScenario.modifier ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}`;
+        : `${activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeScenario.modifier ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}${battlefieldBreakdownText(matchup)}`;
       cell.setAttribute("role", "img");
       cell.setAttribute(
         "aria-label",
@@ -2143,29 +2364,18 @@ function renderSimilarity() {
   resultStage.replaceChildren(view);
 }
 
-function matchupPairsAtRuleState(drillEnabled, speedEnabled) {
-  const previousDrill = drillEffectEnabled;
-  const previousSpeed = speedEffectEnabled;
-  try {
-    drillEffectEnabled = drillEnabled;
-    speedEffectEnabled = speedEnabled;
-    matchupCache.clear();
-    const pairs = [];
-    for (let first = 0; first < shownUnits.length; first += 1) {
-      for (let second = first + 1; second < shownUnits.length; second += 1) {
-        pairs.push({
-          a: shownUnits[first],
-          b: shownUnits[second],
-          shareA: getMatchup(shownUnits[first], shownUnits[second]).shareA
-        });
-      }
+function matchupPairsAtMode(mode) {
+  const pairs = [];
+  for (let first = 0; first < shownUnits.length; first += 1) {
+    for (let second = first + 1; second < shownUnits.length; second += 1) {
+      pairs.push({
+        a: shownUnits[first],
+        b: shownUnits[second],
+        shareA: getMatchup(shownUnits[first], shownUnits[second], 0, mode).shareA
+      });
     }
-    return pairs;
-  } finally {
-    drillEffectEnabled = previousDrill;
-    speedEffectEnabled = previousSpeed;
-    matchupCache.clear();
   }
+  return pairs;
 }
 
 function ruleSensitivity(offPairs, onPairs) {
@@ -2203,7 +2413,7 @@ function renderHealth() {
   const toolbar = createElement("div", "visual-toolbar health-toolbar");
   toolbar.append(
     createElement("span", "visual-toolbar-label", "Roster health"),
-    createElement("span", "visual-toolbar-note", "Balance · distinct roles · counterplay · rule stability")
+    createElement("span", "visual-toolbar-note", "Balance · distinct roles · counterplay · model stability")
   );
 
   const entries = strengthEntries();
@@ -2265,13 +2475,9 @@ function renderHealth() {
         ? "good"
         : "risk";
 
-  const drillSensitivity = ruleSensitivity(
-    matchupPairsAtRuleState(false, speedEffectEnabled),
-    matchupPairsAtRuleState(true, speedEffectEnabled)
-  );
-  const speedSensitivity = ruleSensitivity(
-    matchupPairsAtRuleState(drillEffectEnabled, false),
-    matchupPairsAtRuleState(drillEffectEnabled, true)
+  const battlefieldSensitivity = ruleSensitivity(
+    matchupPairsAtMode("combat"),
+    matchupPairsAtMode("battlefield")
   );
 
   const metrics = createElement("div", "health-metrics");
@@ -2375,13 +2581,12 @@ function renderHealth() {
   const sensitivityPanel = createElement("section", "health-panel health-sensitivity-panel");
   const sensitivityHeading = createElement("div", "health-panel-heading");
   sensitivityHeading.append(
-    createElement("strong", "", "Rule sensitivity"),
-    createElement("span", "", "Average absolute change when each effect is switched on")
+    createElement("strong", "", "Model sensitivity"),
+    createElement("span", "", "Rules-only outcomes compared with the current battlefield assumptions")
   );
   const sensitivityList = createElement("div", "health-sensitivity-list");
   [
-    ["Drill", drillSensitivity],
-    ["Speed", speedSensitivity]
+    ["Battlefield estimate", battlefieldSensitivity]
   ].forEach(([label, sensitivity]) => {
     const row = createElement("div", "health-sensitivity-row");
     const details = createElement("div", "health-sensitivity-details");
@@ -2541,31 +2746,63 @@ function appendSelectOptions(select, options, selectedValue) {
   });
 }
 
-function estimateGeneratorMatchup(a, b, drillEnabled = drillEffectEnabled, speedEnabled = speedEffectEnabled) {
-  let strikeA = a.strike;
-  let strikeB = b.strike;
-  if (drillEnabled && a.drill !== b.drill) {
-    if (a.drill > b.drill) strikeA += 1;
-    else strikeB += 1;
-  }
-  const damageA = Math.max(.001, strikeA * hitChance(a, b) / (1 - 1 / 6));
-  const damageB = Math.max(.001, strikeB * hitChance(b, a) / (1 - 1 / 6));
-  let attacksA = b.hp / damageA;
-  let attacksB = a.hp / damageB;
-  if (speedEnabled && a.speed !== b.speed) {
-    if (a.speed > b.speed) attacksA = Math.max(.05, (b.hp - damageA) / damageA);
-    else attacksB = Math.max(.05, (a.hp - damageB) / damageB);
-  }
-  const advantage = Math.log(Math.max(.001, attacksB) / Math.max(.001, attacksA));
-  return 100 / (1 + Math.exp(-advantage * 2.15));
+function estimateGeneratorMatchup(a, b, mode = "combat") {
+  const damageA = Math.max(.001, a.strike * hitChance(a, b) / (1 - 1 / 6));
+  const damageB = Math.max(.001, b.strike * hitChance(b, a) / (1 - 1 / 6));
+  const shareFromAttacks = (attacksA, attacksB) => {
+    const advantage = Math.log(Math.max(.001, attacksB) / Math.max(.001, attacksA));
+    return 100 / (1 + Math.exp(-advantage * 2.15));
+  };
+  const neutral = shareFromAttacks(b.hp / damageA, a.hp / damageB);
+  if (mode !== "battlefield") return neutral;
+
+  const expectedBonus = unit => accessibleChargeBands(unit, battlefieldSettings)
+    .reduce((total, band) => total + band.probability * band.bonus, 0);
+  const chargeShare = (charger, flank) => {
+    if (charger === "a") {
+      const openingDamage = Math.max(
+        .001,
+        (a.strike + expectedBonus(a) + (flank ? 1 : 0)) * hitChance(a, b) / (1 - 1 / 6)
+      );
+      const replyDamage = Math.max(
+        .001,
+        Math.max(1, b.strike - (flank ? 1 : 0)) * hitChance(b, a) / (1 - 1 / 6)
+      );
+      return shareFromAttacks(
+        Math.max(.05, (b.hp - openingDamage) / damageA),
+        a.hp / replyDamage
+      );
+    }
+    const openingDamage = Math.max(
+      .001,
+      (b.strike + expectedBonus(b) + (flank ? 1 : 0)) * hitChance(b, a) / (1 - 1 / 6)
+    );
+    const replyDamage = Math.max(
+      .001,
+      Math.max(1, a.strike - (flank ? 1 : 0)) * hitChance(a, b) / (1 - 1 / 6)
+    );
+    return shareFromAttacks(
+      b.hp / replyDamage,
+      Math.max(.05, (a.hp - openingDamage) / damageB)
+    );
+  };
+  const initiative = speedInitiativeShare(a, b, battlefieldSettings);
+  const flankA = battlefieldSettings.flankOpportunityRate
+    * drillConversionChance(a.drill - b.drill, battlefieldSettings);
+  const flankB = battlefieldSettings.flankOpportunityRate
+    * drillConversionChance(b.drill - a.drill, battlefieldSettings);
+  const aCharge = chargeShare("a", false) * (1 - flankA) + chargeShare("a", true) * flankA;
+  const bCharge = chargeShare("b", false) * (1 - flankB) + chargeShare("b", true) * flankB;
+  return battlefieldSettings.noChargeChance * neutral
+    + (1 - battlefieldSettings.noChargeChance) * (initiative.a * aCharge + initiative.b * bCharge);
 }
 
-function generatorShareMatrix(roster, drillEnabled = drillEffectEnabled, speedEnabled = speedEffectEnabled) {
+function generatorShareMatrix(roster, mode = "combat") {
   const matrix = Array.from({ length: roster.length }, () => new Float64Array(roster.length));
   for (let first = 0; first < roster.length; first += 1) {
     matrix[first][first] = 50;
     for (let second = first + 1; second < roster.length; second += 1) {
-      const share = estimateGeneratorMatchup(roster[first], roster[second], drillEnabled, speedEnabled);
+      const share = estimateGeneratorMatchup(roster[first], roster[second], mode);
       matrix[first][second] = share;
       matrix[second][first] = 100 - share;
     }
@@ -2636,17 +2873,16 @@ function generatorRosterMetrics(roster) {
 
   let stabilityDifference = 0;
   if (generatorConfig.objectives.stability > 0) {
-    const drillOff = generatorShareMatrix(roster, false, speedEffectEnabled);
-    const drillOn = generatorShareMatrix(roster, true, speedEffectEnabled);
-    const speedOff = generatorShareMatrix(roster, drillEffectEnabled, false);
-    const speedOn = generatorShareMatrix(roster, drillEffectEnabled, true);
+    const combatMatrix = generatorShareMatrix(roster, "combat");
+    const battlefieldMatrix = generatorShareMatrix(roster, "battlefield");
     for (let first = 0; first < unitTotal; first += 1) {
       for (let second = first + 1; second < unitTotal; second += 1) {
-        stabilityDifference += Math.abs(drillOff[first][second] - drillOn[first][second]);
-        stabilityDifference += Math.abs(speedOff[first][second] - speedOn[first][second]);
+        stabilityDifference += Math.abs(
+          combatMatrix[first][second] - battlefieldMatrix[first][second]
+        );
       }
     }
-    stabilityDifference /= pairTotal * 2;
+    stabilityDifference /= pairTotal;
   }
 
   let changeTotal = 0;
@@ -3504,7 +3740,7 @@ function renderResults() {
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
-      ? `${shownUnits.length} units · ${matchupCount} matchups · 3 scenarios`
+      ? `${shownUnits.length} units · ${matchupCount} matchups · ${matrixMode === "combat" ? "rules only" : "battlefield estimate"}`
       : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
   outcomeKey.hidden = activeView !== "bars";
 
@@ -3522,20 +3758,6 @@ function renderResults() {
   else if (activeView === "profile") renderProfile();
   else renderBars();
 }
-
-drillEffectToggle.addEventListener("change", () => {
-  drillEffectEnabled = drillEffectToggle.checked;
-  saveDrillEffect();
-  matchupCache.clear();
-  renderResults();
-});
-
-speedEffectToggle.addEventListener("change", () => {
-  speedEffectEnabled = speedEffectToggle.checked;
-  saveSpeedEffect();
-  matchupCache.clear();
-  renderResults();
-});
 
 setsButton.addEventListener("click", () => {
   const willOpen = setMenu.hidden;
@@ -3677,8 +3899,6 @@ enableMatchupRowSorting();
 renderEditor();
 renderResults();
 renderUnitSets();
-drillEffectToggle.checked = drillEffectEnabled;
-speedEffectToggle.checked = speedEffectEnabled;
 setUpdating(false);
 if (unitLoadNeedsPersist) saveUnits();
 if (unitSetsNeedPersist) saveUnitSets();

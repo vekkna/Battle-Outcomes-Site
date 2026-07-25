@@ -51,16 +51,6 @@
           <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+. Every natural 6 scores a hit and adds another die, which can also explode.">
             <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode
           </div>
-          <label class="drill-rule-control" title="When enabled, the unit with higher Drill gains 1 STR in every matchup. The lower-Drill unit keeps its base STR. Equal Drill has no effect.">
-            <input id="drillEffectToggle" type="checkbox">
-            <span class="drill-rule-toggle" aria-hidden="true"></span>
-            <span>Drill effect</span>
-          </label>
-          <label class="speed-rule-control" title="When enabled, the faster unit makes one free attack before the normal fight begins. Equal Speed grants no free attack.">
-            <input id="speedEffectToggle" type="checkbox">
-            <span class="speed-rule-toggle" aria-hidden="true"></span>
-            <span>Speed effect</span>
-          </label>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
           </button>
@@ -131,8 +121,8 @@
         </button>
       </div>
       <div class="stats-row">
-        <label class="stat-control speed-control" title="The faster unit makes one free opening attack when the global Speed effect is enabled"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
-        <label class="stat-control drill-control" title="The higher-Drill unit gains 1 STR; the lower-Drill unit keeps its base STR"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
+        <label class="stat-control speed-control" title="In Battlefield estimate, Speed affects which unit is more likely to initiate a charge and which charge-distance bands it can reach"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
+        <label class="stat-control drill-control" title="In Battlefield estimate, Drill affects the chance that an initiated charge converts into a flank"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
         <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
         <label class="stat-control hp-control" title="Hits required to kill this unit"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
@@ -145,6 +135,6 @@
     </article>
   </template>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
