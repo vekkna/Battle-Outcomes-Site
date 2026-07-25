@@ -881,8 +881,8 @@ function effectiveStrikes(a, b, combatModifier = 0) {
   const adjustmentA = drillAdjustmentA + combatAdjustmentA;
   const adjustmentB = drillAdjustmentB + combatAdjustmentB;
   return {
-    strikeA: Math.max(0, a.strike + adjustmentA),
-    strikeB: Math.max(0, b.strike + adjustmentB),
+    strikeA: Math.max(1, a.strike + adjustmentA),
+    strikeB: Math.max(1, b.strike + adjustmentB),
     adjustmentA,
     adjustmentB,
     drillAdjustmentA,
