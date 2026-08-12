@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  COMBAT_CHARGE_BONUS,
   DEFAULT_BATTLEFIELD_SETTINGS,
   accessibleChargeBands,
   createCombatCore,
@@ -42,31 +43,29 @@ const sourceRoster = [
   unit({ name: "Lancers", strike: 2, ap: true, defense: 4 })
 ];
 
-test("source Fanatics rules-only outcomes remain deterministic across all three combat scenarios", () => {
+test("source Fanatics charge-and-disruption outcomes remain deterministic", () => {
   const fanatics = sourceRoster.find(item => item.name === "Fanatics");
   const expected = {
-    "Heavy Infantry": [92.35, 98.41, 99.87],
-    Infantry: [60.27, 84.73, 97.63],
-    Spearmen: [44.65, 68.87, 88.96],
-    "Heavy Cavalry": [31.93, 69.09, 97.74],
-    Lancers: [97.04, 99.96, 99.98],
-    Cavalry: [78.57, 96.31, 99.92],
-    Halberds: [93.70, 99.50, 99.99],
-    "Light Infantry": [33.02, 53.78, 75.52],
-    "Light Cavalry": [93.73, 99.35, 99.99]
+    "Heavy Infantry": 91.17,
+    Infantry: 64.27,
+    Spearmen: 48.16,
+    "Heavy Cavalry": 37.71,
+    Lancers: 96.46,
+    Cavalry: 81.61,
+    Halberds: 92.01,
+    "Light Infantry": 35.54,
+    "Light Cavalry": 93.47
   };
-  Object.entries(expected).forEach(([name, values]) => {
+  Object.entries(expected).forEach(([name, expectedShare]) => {
     const opponent = sourceRoster.find(item => item.name === name);
-    [0, 1, 2].forEach((modifier, index) => {
-      assert.ok(
-        Math.abs(resolveRulesMatchup(fanatics, opponent, modifier).shareA - values[index]) < 0.01,
-        `${name}, modifier ${modifier}`
-      );
-    });
+    assert.ok(
+      Math.abs(resolveRulesMatchup(fanatics, opponent).shareA - expectedShare) < 0.01,
+      name
+    );
   });
 });
 
-test("swapping units produces complementary rules-only and battlefield results", () => {
+test("swapping units produces complementary combat and battlefield results", () => {
   const a = unit({ name: "A", strike: 6, speed: 5, drill: 2 });
   const b = unit({ name: "B", strike: 4, defense: 5, speed: 4, drill: 1 });
   for (const resolver of [resolveRulesMatchup, resolveBattlefieldMatchup]) {
@@ -76,10 +75,11 @@ test("swapping units produces complementary rules-only and battlefield results",
   }
 });
 
-test("rules-only outcomes ignore Speed and Drill", () => {
+test("combat outcomes ignore Speed, Drill and legacy positional modifiers", () => {
   const a = unit({ name: "A", strike: 5, defense: 4, speed: 99, drill: 99 });
   const b = unit({ name: "B", strike: 5, defense: 4, speed: 0, drill: 0 });
   assert.ok(Math.abs(resolveRulesMatchup(a, b).shareA - 50) < 1e-9);
+  assert.equal(resolveRulesMatchup(a, b, 2).shareA, resolveRulesMatchup(a, b).shareA);
   assert.deepEqual(effectiveStrikes(a, b), {
     strikeA: 5,
     strikeB: 5,
@@ -90,6 +90,76 @@ test("rules-only outcomes ignore Speed and Drill", () => {
     combatAdjustmentA: 0,
     combatAdjustmentB: 0
   });
+});
+
+test("charging adds no dice and both possible chargers are weighted equally", () => {
+  const a = unit({ name: "A", strike: 5, defense: 4 });
+  const b = unit({ name: "B", strike: 5, defense: 4 });
+  const result = resolveRulesMatchup(a, b);
+  assert.equal(COMBAT_CHARGE_BONUS, 0);
+  assert.equal(result.chargeBonus, 0);
+  assert.equal(result.chargeProbabilityA, 0.5);
+  assert.equal(result.chargeProbabilityB, 0.5);
+  assert.ok(result.chanceAWhenACharges > 0.5);
+  assert.ok(result.chanceAWhenBCharges < 0.5);
+  assert.ok(Math.abs(result.chanceAWhenACharges + result.chanceAWhenBCharges - 1) < 1e-12);
+  assert.ok(Math.abs(result.shareA - 50) < 1e-12);
+  assert.ok(Math.abs(result.expectedChargeHitsA - 5 * result.hitChanceA / (1 - 1 / 6)) < 1e-12);
+});
+
+test("a one-HP engagement matches the hand-calculated charge recurrence", () => {
+  const a = unit({ name: "A", strike: 1, defense: 6, hp: 1 });
+  const b = unit({ name: "B", strike: 1, defense: 6, hp: 1 });
+  const result = resolveRulesMatchup(a, b);
+  assert.ok(Math.abs(result.chanceAWhenACharges - 37 / 72) < 1e-12);
+  assert.ok(Math.abs(result.chanceAWhenBCharges - 35 / 72) < 1e-12);
+  assert.ok(Math.abs(result.regularRoundChanceA - 0.5) < 1e-12);
+});
+
+test("only the second striker receives a same-round disruption penalty", () => {
+  const result = resolveRulesMatchup(
+    unit({ name: "A", strike: 6, defense: 4, hp: 7 }),
+    unit({ name: "B", strike: 6, defense: 4, hp: 7 })
+  );
+  assert.ok(result.averageDisruptionA > 0);
+  assert.ok(result.averageDisruptionB > 0);
+  assert.ok(Math.abs(result.averageDisruptionA - result.averageDisruptionB) < 1e-12);
+  assert.ok(result.chanceAWhenFirst > 0.5);
+  assert.ok(result.chanceAWhenSecond < 0.5);
+});
+
+test("an individual +1 attack bonus applies to every strike including the opening", () => {
+  const a = unit({ name: "A", strike: 5, defense: 4 });
+  const b = unit({ name: "B", strike: 5, defense: 4 });
+  const base = resolveRulesMatchup(a, b);
+  const advantaged = resolveRulesMatchup(a, b, { attackBonusA: 1 });
+  const reversed = resolveRulesMatchup(b, a, { attackBonusB: 1 });
+
+  assert.equal(advantaged.attackBonusA, 1);
+  assert.equal(advantaged.attackBonusB, 0);
+  assert.equal(advantaged.effectiveStrikeA, 6);
+  assert.equal(advantaged.effectiveStrikeB, 5);
+  assert.ok(advantaged.shareA > base.shareA);
+  assert.ok(Math.abs(advantaged.expectedHitsA - 6 * advantaged.hitChanceA / (1 - 1 / 6)) < 1e-12);
+  assert.ok(Math.abs(advantaged.expectedChargeHitsA - 6 * advantaged.hitChanceA / (1 - 1 / 6)) < 1e-12);
+  assert.ok(Math.abs(advantaged.shareA + reversed.shareA - 100) < 1e-9);
+
+  const bothAdvantaged = resolveRulesMatchup(a, b, { attackBonusA: 1, attackBonusB: 1 });
+  assert.ok(Math.abs(bothAdvantaged.shareA - 50) < 1e-9);
+});
+
+test("mirror engagements produce complete symmetric results", () => {
+  const cavalry = unit({ name: "Cavalry", strike: 7, defense: 4, hp: 7 });
+  for (const options of [{}, { attackBonusA: 1, attackBonusB: 1 }]) {
+    const mirror = resolveRulesMatchup(cavalry, cavalry, options);
+    assert.ok(Math.abs(mirror.shareA - 50) < 1e-9);
+    assert.equal(mirror.winner, "even");
+    assert.ok(Number.isFinite(mirror.battleRounds));
+    assert.ok(mirror.battleRounds > 0);
+    assert.ok(Math.abs(mirror.chanceAWhenACharges + mirror.chanceAWhenBCharges - 1) < 1e-12);
+    assert.ok(Math.abs(mirror.victoryHpA - mirror.victoryHpB) < 1e-12);
+  }
+  assert.ok(Math.abs(resolveBattlefieldMatchup(cavalry, cavalry).shareA - 50) < 1e-9);
 });
 
 test("a one-point Speed advantage gives 60/40 conditional charge control", () => {
@@ -185,14 +255,13 @@ test("every matchup mode returns a finite probability within 0–100", () => {
   for (const a of sourceRoster) {
     for (const b of sourceRoster) {
       if (a === b) continue;
+      const combat = resolveRulesMatchup(a, b);
+      assert.ok(Number.isFinite(combat.shareA));
+      assert.ok(combat.shareA >= 0 && combat.shareA <= 100);
       for (const modifier of [-2, -1, 0, 1, 2]) {
-        for (const result of [
-          resolveRulesMatchup(a, b, modifier),
-          resolveBattlefieldMatchup(a, b, modifier, settings)
-        ]) {
-          assert.ok(Number.isFinite(result.shareA));
-          assert.ok(result.shareA >= 0 && result.shareA <= 100);
-        }
+        const battlefield = resolveBattlefieldMatchup(a, b, modifier, settings);
+        assert.ok(Number.isFinite(battlefield.shareA));
+        assert.ok(battlefield.shareA >= 0 && battlefield.shareA <= 100);
       }
     }
   }

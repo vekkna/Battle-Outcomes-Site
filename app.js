@@ -18,6 +18,7 @@ const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
 const MATRIX_SCENARIO_KEY = "matchup-board-matrix-scenario-v1";
 const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
 const MATRIX_MODE_KEY = "matchup-board-matrix-mode-v1";
+const MATRIX_ATTACK_BONUS_KEY = "matchup-board-matrix-attack-bonus-v1";
 const BATTLEFIELD_SETTINGS_KEY = "matchup-board-battlefield-settings-v1";
 const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const UNIT_SETS_KEY = "matchup-board-unit-sets-v1";
@@ -88,6 +89,7 @@ const setList = document.querySelector("#setList");
 const setEmpty = document.querySelector("#setEmpty");
 const saveState = document.querySelector("#saveState");
 const resultStage = document.querySelector("#resultStage");
+const resultsPanel = document.querySelector(".results-panel");
 const resultsMeta = document.querySelector("#resultsMeta");
 const outcomeKey = document.querySelector(".outcome-key");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
@@ -100,7 +102,8 @@ let activeView = loadView();
 let matrixSort = loadMatrixSort();
 let matrixScenario = loadMatrixScenario();
 let matrixCustomOrder = loadMatrixCustomOrder();
-let matrixMode = loadMatrixMode();
+let matrixMode = "combat";
+let matrixAttackBonusIds = loadMatrixAttackBonusIds();
 let battlefieldSettings = loadBattlefieldSettings();
 let counterThreshold = loadCounterThreshold();
 let similarityMetric = loadSimilarityMetric();
@@ -439,7 +442,7 @@ function loadUnits() {
 
 function loadView() {
   const saved = localStorage.getItem(VIEW_KEY);
-  return ["bars", "matrix", "similarity", "counters", "profile", "health", "generator"].includes(saved) ? saved : "matrix";
+  return ["matrix", "similarity"].includes(saved) ? saved : "matrix";
 }
 
 function loadSimilarityMetric() {
@@ -462,7 +465,7 @@ function saveSimilarityMetric() {
 
 function loadMatrixSort() {
   const saved = readCookieValue(MATRIX_SORT_KEY) || localStorage.getItem(MATRIX_SORT_KEY);
-  return ["roster", "strength", "similar", "custom"].includes(saved) ? saved : "roster";
+  return ["strength", "custom"].includes(saved) ? saved : "strength";
 }
 
 function saveMatrixSort() {
@@ -509,6 +512,37 @@ function saveMatrixCustomOrder() {
     // Custom ordering still works for the current session.
   }
   writeCookieValue(MATRIX_CUSTOM_ORDER_KEY, value);
+}
+
+function loadMatrixAttackBonusIds() {
+  try {
+    const saved = JSON.parse(
+      readCookieValue(MATRIX_ATTACK_BONUS_KEY)
+      || localStorage.getItem(MATRIX_ATTACK_BONUS_KEY)
+      || "[]"
+    );
+    return new Set(Array.isArray(saved) ? saved.map(String) : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function saveMatrixAttackBonusIds() {
+  const value = JSON.stringify([...matrixAttackBonusIds]);
+  try {
+    localStorage.setItem(MATRIX_ATTACK_BONUS_KEY, value);
+  } catch (_) {
+    // Attack bonuses still work for the current session.
+  }
+  writeCookieValue(MATRIX_ATTACK_BONUS_KEY, value);
+}
+
+function pruneMatrixAttackBonusIds() {
+  const activeIds = new Set(units.map(unit => unit.id));
+  const next = new Set([...matrixAttackBonusIds].filter(id => activeIds.has(id)));
+  if (next.size === matrixAttackBonusIds.size) return;
+  matrixAttackBonusIds = next;
+  saveMatrixAttackBonusIds();
 }
 
 function loadCounterThreshold() {
@@ -1196,7 +1230,14 @@ function getLegacyMatchup(a, b, combatModifier = 0) {
   return result;
 }
 
-function matchupKey(a, b, combatModifier = 0, mode = "combat") {
+function matchupKey(
+  a,
+  b,
+  combatModifier = 0,
+  mode = "combat",
+  attackBonusA = 0,
+  attackBonusB = 0
+) {
   const unitKey = unit => [
     unit.id,
     unit.strike,
@@ -1208,23 +1249,101 @@ function matchupKey(a, b, combatModifier = 0, mode = "combat") {
   ].join(":");
   const settingsPart = mode === "battlefield"
     ? battlefieldSettingsKey(battlefieldSettings)
-    : "rules-only";
-  return `${mode}:${settingsPart}:${combatModifier}|${unitKey(a)}|${unitKey(b)}`;
+    : "charge-disruption-v4";
+  const effectiveModifier = mode === "battlefield" ? combatModifier : 0;
+  const bonusPart = mode === "combat" ? `${attackBonusA}:${attackBonusB}` : "0:0";
+  return `${mode}:${settingsPart}:${effectiveModifier}:${bonusPart}|${unitKey(a)}|${unitKey(b)}`;
 }
 
-function getMatchup(a, b, combatModifier = 0, mode = "combat") {
-  const key = matchupKey(a, b, combatModifier, mode);
+function reverseCombatMatchup(matchup) {
+  const reverseShare = 100 - matchup.shareA;
+  const reverseScenario = scenario => ({
+    ...scenario,
+    id: scenario.id === "a-charges" ? "b-charges" : "a-charges",
+    charger: scenario.charger === "a" ? "b" : "a",
+    shareA: 100 - scenario.shareA
+  });
+  return {
+    ...matchup,
+    a: matchup.b,
+    b: matchup.a,
+    effectiveStrikeA: matchup.effectiveStrikeB,
+    effectiveStrikeB: matchup.effectiveStrikeA,
+    strikeAdjustmentA: matchup.strikeAdjustmentB,
+    strikeAdjustmentB: matchup.strikeAdjustmentA,
+    drillAdjustmentA: matchup.drillAdjustmentB,
+    drillAdjustmentB: matchup.drillAdjustmentA,
+    combatAdjustmentA: matchup.combatAdjustmentB,
+    combatAdjustmentB: matchup.combatAdjustmentA,
+    hitChanceA: matchup.hitChanceB,
+    hitChanceB: matchup.hitChanceA,
+    expectedHitsA: matchup.expectedHitsB,
+    expectedHitsB: matchup.expectedHitsA,
+    expectedChargeHitsA: matchup.expectedChargeHitsB,
+    expectedChargeHitsB: matchup.expectedChargeHitsA,
+    attackBonusA: matchup.attackBonusB,
+    attackBonusB: matchup.attackBonusA,
+    chargeProbabilityA: matchup.chargeProbabilityB,
+    chargeProbabilityB: matchup.chargeProbabilityA,
+    chanceAWhenFirst: 1 - matchup.chanceAWhenSecond,
+    chanceAWhenSecond: 1 - matchup.chanceAWhenFirst,
+    chanceAWhenACharges: 1 - matchup.chanceAWhenBCharges,
+    chanceAWhenBCharges: 1 - matchup.chanceAWhenACharges,
+    regularRoundChanceA: 1 - matchup.regularRoundChanceA,
+    shareA: reverseShare,
+    victoryTurnsA: matchup.victoryTurnsB,
+    victoryTurnsB: matchup.victoryTurnsA,
+    victoryHpA: matchup.victoryHpB,
+    victoryHpB: matchup.victoryHpA,
+    aActivations: matchup.bActivations,
+    bActivations: matchup.aActivations,
+    averageDisruptionA: matchup.averageDisruptionB,
+    averageDisruptionB: matchup.averageDisruptionA,
+    soloTurnsA: matchup.soloTurnsB,
+    soloTurnsB: matchup.soloTurnsA,
+    winner: reverseShare > 50.000001 ? "a" : reverseShare < 49.999999 ? "b" : "even",
+    chargeScenarios: [...matchup.chargeScenarios].reverse().map(reverseScenario)
+  };
+}
+
+function getMatchup(
+  a,
+  b,
+  combatModifier = 0,
+  mode = "combat",
+  attackBonusA = 0,
+  attackBonusB = 0
+) {
+  const key = matchupKey(a, b, combatModifier, mode, attackBonusA, attackBonusB);
   const cached = matchupCache.get(key);
   if (cached) return cached;
+  if (mode === "combat") {
+    const reverseKey = matchupKey(b, a, 0, mode, attackBonusB, attackBonusA);
+    const cachedReverse = matchupCache.get(reverseKey);
+    if (cachedReverse) {
+      const reversed = reverseCombatMatchup(cachedReverse);
+      matchupCache.set(key, reversed);
+      return reversed;
+    }
+  }
   const matchup = mode === "battlefield"
     ? resolveBattlefieldMatchup(a, b, combatModifier, battlefieldSettings)
-    : resolveRulesMatchup(a, b, combatModifier);
+    : resolveRulesMatchup(a, b, { attackBonusA, attackBonusB });
   matchupCache.set(key, matchup);
   return matchup;
 }
 
 function getMatrixMatchup(a, b, combatModifier = 0) {
-  return getMatchup(a, b, combatModifier, matrixMode);
+  const attackBonusA = matrixMode === "combat" && matrixAttackBonusIds.has(a.id) ? 1 : 0;
+  const attackBonusB = matrixMode === "combat" && matrixAttackBonusIds.has(b.id) ? 1 : 0;
+  return getMatchup(
+    a,
+    b,
+    combatModifier,
+    matrixMode,
+    attackBonusA,
+    attackBonusB
+  );
 }
 
 function hitTarget(attacker, defender) {
@@ -1236,10 +1355,11 @@ function signedModifier(value) {
   return `${value > 0 ? "+" : "−"}${Math.abs(value)}`;
 }
 
-function matchupStrikeText(unit, effectiveStrike, drillAdjustment, combatAdjustment) {
+function matchupStrikeText(unit, effectiveStrike, drillAdjustment, combatAdjustment, attackBonus = 0) {
   const changes = [];
   if (drillAdjustment) changes.push(`Drill ${signedModifier(drillAdjustment)}`);
   if (combatAdjustment) changes.push(`position ${signedModifier(combatAdjustment)}`);
+  if (attackBonus) changes.push(`matrix bonus ${signedModifier(attackBonus)}`);
   if (!changes.length) return `${effectiveStrike} dice`;
   return `${effectiveStrike} dice (base STR ${unit.strike}, ${changes.join(", ")})`;
 }
@@ -1248,14 +1368,17 @@ function matchupInitiativeText(matchup) {
   if (matchup.mode === "battlefield") {
     return "Battlefield estimate weights neutral, frontal-charge and flank-charge openings; Speed affects charge control and Drill affects flank conversion.";
   }
-  return "Rules-only combat averages both possible attack orders; Speed and Drill do not alter combat power.";
+  return "Both possible chargers are weighted equally. Charging adds no dice: its advantage is striking first and disrupting the reply. In later rounds either unit is equally likely to strike first. Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die.";
 }
 
 function matchupTitle(matchup) {
-  const positionalText = matchup.combatModifier
+  const positionalText = matchup.mode === "battlefield" && matchup.combatModifier
     ? ` Positional modifier: ${matchup.a.name} ${signedModifier(matchup.combatAdjustmentA)} STR, ${matchup.b.name} ${signedModifier(matchup.combatAdjustmentB)} STR.`
     : "";
-  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${positionalText} ${matchup.a.name}: ${matchupStrikeText(matchup.a, matchup.effectiveStrikeA, matchup.drillAdjustmentA, matchup.combatAdjustmentA)} hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchupStrikeText(matchup.b, matchup.effectiveStrikeB, matchup.drillAdjustmentB, matchup.combatAdjustmentB)} hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. ${matchupInitiativeText(matchup)}`;
+  const chargeText = matchup.mode === "combat"
+    ? ` Opening outcomes: ${matchup.a.name} charging ${Math.round(matchup.chanceAWhenACharges * 100)}%; ${matchup.b.name} charging ${Math.round(matchup.chanceAWhenBCharges * 100)}% for ${matchup.a.name}.`
+    : "";
+  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${positionalText}${chargeText} ${matchup.a.name}: ${matchupStrikeText(matchup.a, matchup.effectiveStrikeA, matchup.drillAdjustmentA, matchup.combatAdjustmentA, matchup.attackBonusA)} hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchupStrikeText(matchup.b, matchup.effectiveStrikeB, matchup.drillAdjustmentB, matchup.combatAdjustmentB, matchup.attackBonusB)} hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. ${matchupInitiativeText(matchup)}`;
 }
 
 function comparisonsFor(unit) {
@@ -1333,6 +1456,7 @@ function loadNamedUnitSet(id) {
   }
   units = sanitiseUnits(saved.units);
   shownUnits = cloneUnits(units);
+  pruneMatrixAttackBonusIds();
   matchupOrders = {};
   matrixCustomOrder = units.map(unit => unit.id);
   matchupCache.clear();
@@ -1505,11 +1629,11 @@ function semanticMatrixColour(share) {
   };
 }
 
-function strengthEntries() {
+function strengthEntries(resolveMatchup = getMatchup) {
   return shownUnits.map((unit, index) => {
     const matchups = shownUnits
       .filter(opponent => opponent.id !== unit.id)
-      .map(opponent => getMatchup(unit, opponent));
+      .map(opponent => resolveMatchup(unit, opponent));
     return {
       unit,
       index,
@@ -1519,13 +1643,13 @@ function strengthEntries() {
   });
 }
 
-function matchupPatternDistance(a, b, centreProfiles = false) {
+function matchupPatternDistance(a, b, centreProfiles = false, resolveMatchup = getMatchup) {
   const commonOpponents = shownUnits
     .filter(unit => unit.id !== a.id && unit.id !== b.id)
     .sort((first, second) => first.id < second.id ? -1 : first.id > second.id ? 1 : 0);
   if (!commonOpponents.length) return 0;
-  const profileA = commonOpponents.map(opponent => getMatchup(a, opponent).shareA);
-  const profileB = commonOpponents.map(opponent => getMatchup(b, opponent).shareA);
+  const profileA = commonOpponents.map(opponent => resolveMatchup(a, opponent).shareA);
+  const profileB = commonOpponents.map(opponent => resolveMatchup(b, opponent).shareA);
   const averageA = centreProfiles ? profileA.reduce((sum, value) => sum + value, 0) / profileA.length : 0;
   const averageB = centreProfiles ? profileB.reduce((sum, value) => sum + value, 0) / profileB.length : 0;
   const squaredDifference = commonOpponents.reduce((total, _, index) => {
@@ -1536,7 +1660,6 @@ function matchupPatternDistance(a, b, centreProfiles = false) {
 }
 
 function matrixUnitOrder() {
-  if (matrixSort === "roster") return [...shownUnits];
   if (matrixSort === "custom") {
     const unitsById = new Map(shownUnits.map(unit => [unit.id, unit]));
     const ordered = matrixCustomOrder
@@ -1545,77 +1668,10 @@ function matrixUnitOrder() {
     const orderedIds = new Set(ordered.map(unit => unit.id));
     return [...ordered, ...shownUnits.filter(unit => !orderedIds.has(unit.id))];
   }
-  if (shownUnits.length < 3) return [...shownUnits];
-  const entries = strengthEntries();
-  const entryById = new Map(entries.map(entry => [entry.unit.id, entry]));
-  const strengthOrder = [...entries].sort((a, b) =>
+  const entries = strengthEntries(getMatrixMatchup);
+  return [...entries].sort((a, b) =>
     b.average - a.average || b.wins - a.wins || a.index - b.index
-  );
-  if (matrixSort === "strength") return strengthOrder.map(entry => entry.unit);
-
-  const distanceCache = new Map();
-  const distance = (a, b) => {
-    const key = [a.id, b.id].sort().join("|");
-    if (distanceCache.has(key)) return distanceCache.get(key);
-    const value = matchupPatternDistance(a, b);
-    distanceCache.set(key, value);
-    return value;
-  };
-  const pathCost = path => path.slice(1).reduce(
-    (total, unit, index) => total + distance(path[index], unit),
-    0
-  );
-  const improvePath = original => {
-    let path = [...original];
-    let improved = true;
-    while (improved) {
-      improved = false;
-      const currentCost = pathCost(path);
-      for (let start = 0; start < path.length - 1 && !improved; start += 1) {
-        for (let end = start + 1; end < path.length; end += 1) {
-          const candidate = [
-            ...path.slice(0, start),
-            ...path.slice(start, end + 1).reverse(),
-            ...path.slice(end + 1)
-          ];
-          if (pathCost(candidate) < currentCost - 1e-9) {
-            path = candidate;
-            improved = true;
-            break;
-          }
-        }
-      }
-    }
-    return path;
-  };
-
-  let bestPath = null;
-  let bestCost = Infinity;
-  shownUnits.forEach(firstUnit => {
-    const path = [firstUnit];
-    const remaining = shownUnits.filter(unit => unit.id !== firstUnit.id);
-    while (remaining.length) {
-      const last = path[path.length - 1];
-      remaining.sort((a, b) => {
-        const difference = distance(last, a) - distance(last, b);
-        if (Math.abs(difference) > 1e-9) return difference;
-        const aEntry = entryById.get(a.id);
-        const bEntry = entryById.get(b.id);
-        return bEntry.average - aEntry.average || aEntry.index - bEntry.index;
-      });
-      path.push(remaining.shift());
-    }
-    const improved = improvePath(path);
-    const firstEntry = entryById.get(improved[0].id);
-    const lastEntry = entryById.get(improved[improved.length - 1].id);
-    if (lastEntry.average > firstEntry.average + 1e-9) improved.reverse();
-    const cost = pathCost(improved);
-    if (cost < bestCost - 1e-9) {
-      bestPath = improved;
-      bestCost = cost;
-    }
-  });
-  return bestPath || strengthOrder.map(entry => entry.unit);
+  ).map(entry => entry.unit);
 }
 
 function reorderMatrixUnits(draggedId, targetId, insertAfter) {
@@ -1647,6 +1703,14 @@ function markMatrixDropRow(grid, rowId, insertAfter) {
       item.classList.add(insertAfter ? "matrix-row-drop-after" : "matrix-row-drop-before");
     }
   });
+}
+
+function toggleMatrixAttackBonus(unitId) {
+  if (matrixAttackBonusIds.has(unitId)) matrixAttackBonusIds.delete(unitId);
+  else matrixAttackBonusIds.add(unitId);
+  saveMatrixAttackBonusIds();
+  matchupCache.clear();
+  renderMatrix();
 }
 
 function matrixScenarioById(id) {
@@ -1692,6 +1756,28 @@ function matrixScenarioImpact(matrixUnits, scenario) {
     largestDelta,
     flips,
     matchupCount
+  };
+}
+
+function matrixEngagementLength(matrixUnits, combatModifier = 0) {
+  const rounds = [];
+  matrixUnits.forEach(rowUnit => {
+    matrixUnits.forEach(opponent => {
+      const value = getMatrixMatchup(rowUnit, opponent, combatModifier).battleRounds;
+      if (Number.isFinite(value)) rounds.push(value);
+    });
+  });
+  rounds.sort((a, b) => a - b);
+  const middle = Math.floor(rounds.length / 2);
+  const median = rounds.length % 2
+    ? rounds[middle]
+    : (rounds[middle - 1] + rounds[middle]) / 2;
+  return {
+    average: rounds.reduce((total, value) => total + value, 0) / rounds.length,
+    median,
+    minimum: rounds[0],
+    maximum: rounds.at(-1),
+    count: rounds.length
   };
 }
 
@@ -1909,81 +1995,17 @@ function enableMatrixRowSorting(grid) {
 function renderMatrix() {
   const view = createElement("div", "matrix-view");
   const controls = createElement("div", "matrix-controls");
-  const modeToolbar = createElement("div", "visual-toolbar matrix-mode-toolbar");
-  const modeControl = createElement("div", "mini-switcher matrix-mode-switcher");
-  [
-    ["combat", "Combat matrix", "Exact rules-only engagement using STR, DEF, AP and HP; Speed and Drill are ignored."],
-    ["battlefield", "Battlefield estimate", "Weighted provisional openings: Speed controls charge access and Drill controls flank conversion."]
-  ].forEach(([value, label, description]) => {
-    const button = createElement("button", matrixMode === value ? "active" : "", label);
-    button.type = "button";
-    button.title = description;
-    button.setAttribute("aria-pressed", String(matrixMode === value));
-    button.addEventListener("click", () => {
-      matrixMode = value;
-      saveMatrixMode();
-      matchupCache.clear();
-      renderMatrix();
-    });
-    modeControl.append(button);
-  });
-  modeToolbar.append(
-    createElement("span", "visual-toolbar-label", "Calculation"),
-    modeControl,
-    createElement(
-      "span",
-      "visual-toolbar-note",
-      matrixMode === "combat"
-        ? "Exact rules only · Speed and Drill ignored"
-        : "Provisional weighted charge and flank assumptions"
-    )
-  );
-  const scenarioToolbar = createElement("div", "visual-toolbar scenario-toolbar");
-  const scenarioControl = createElement("div", "mini-switcher scenario-switcher");
-  [
-    { id: "compare", label: "Compare 3", description: "Show all three expected outcomes in every matrix cell" },
-    ...COMBAT_SCENARIOS
-  ].forEach(scenario => {
-    const button = createElement("button", matrixScenario === scenario.id ? "active" : "", scenario.label);
-    button.type = "button";
-    button.title = scenario.description;
-    button.setAttribute("aria-pressed", String(matrixScenario === scenario.id));
-    button.addEventListener("click", () => {
-      matrixScenario = scenario.id;
-      saveMatrixScenario();
-      renderMatrix();
-    });
-    scenarioControl.append(button);
-  });
-  scenarioToolbar.append(
-    createElement("span", "visual-toolbar-label", "Scenario"),
-    scenarioControl,
-    createElement(
-      "span",
-      "visual-toolbar-note",
-      matrixScenario === "compare"
-        ? "Every cell: Neutral · 1 advantage · 2 advantages"
-        : matrixScenarioById(matrixScenario).description
-    )
-  );
-
   const toolbar = createElement("div", "visual-toolbar matrix-toolbar");
   const sortControl = createElement("div", "mini-switcher");
   [
-    ["roster", "Roster"],
     ["strength", "Strength"],
-    ["similar", "Similar matchups"],
     ["custom", "Custom"]
   ].forEach(([value, label]) => {
     const button = createElement("button", matrixSort === value ? "active" : "", label);
     button.type = "button";
     button.title = value === "strength"
       ? "Order by average win chance against the current roster"
-      : value === "similar"
-        ? "Place units with similar matchup patterns together"
-        : value === "custom"
-          ? "Drag matrix rows into your preferred order"
-          : "Use your manually arranged roster order";
+      : "Drag matrix rows into your preferred order";
     button.addEventListener("click", () => {
       if (value === "custom" && !matrixCustomOrder.length) {
         matrixCustomOrder = matrixUnitOrder().map(unit => unit.id);
@@ -2003,49 +2025,45 @@ function renderMatrix() {
       "visual-toolbar-note",
       matrixSort === "custom"
         ? "Drag row handles to reorder"
-        : matrixScenario === "compare"
-          ? "Cell: N / 1A / 2A win % · small number is change vs Neutral"
-          : "Cell: row win chance · expected rounds · change vs Neutral"
+        : "Cell: overall win % · expected rounds"
     )
   );
-  controls.append(modeToolbar, scenarioToolbar, toolbar);
-  if (matrixMode === "battlefield") controls.append(renderBattlefieldSettingsPanel());
+  controls.append(toolbar);
 
   const matrixUnits = matrixUnitOrder();
-  const activeScenario = matrixScenario === "compare" ? COMBAT_SCENARIOS[0] : matrixScenarioById(matrixScenario);
+  const usesPositionScenarios = matrixMode === "battlefield";
+  const comparesPositionScenarios = usesPositionScenarios && matrixScenario === "compare";
+  const activeScenario = comparesPositionScenarios ? COMBAT_SCENARIOS[0] : matrixScenarioById(matrixScenario);
+  const activeModifier = usesPositionScenarios ? activeScenario.modifier : 0;
   const strengths = new Map(matrixUnits.map(unit => {
     const matchups = matrixUnits
       .filter(opponent => opponent.id !== unit.id)
-      .map(opponent => getMatrixMatchup(unit, opponent, activeScenario.modifier));
+      .map(opponent => getMatrixMatchup(unit, opponent, activeModifier));
     return [unit.id, averageShare(matchups)];
   }));
 
   const impact = createElement("div", "matrix-impact");
-  const impactScenarios = matrixScenario === "compare"
-    ? COMBAT_SCENARIOS.slice(1)
-    : [activeScenario];
-  impact.classList.toggle("single", impactScenarios.length === 1);
-  impact.classList.toggle("double", impactScenarios.length === 2);
-  impactScenarios.forEach(scenario => {
-    const metrics = matrixScenarioImpact(matrixUnits, scenario);
-    const item = createElement("div", "matrix-impact-item");
-    item.dataset.scenario = scenario.id;
-    item.append(
-      createElement("span", "matrix-impact-name", scenario.label),
-      createElement("strong", "", `${formatPercentagePointDelta(metrics.averageDelta, 1)} pp avg`),
-      createElement(
-        "span",
-        "matrix-impact-detail",
-        `${metrics.flips} winner flip${metrics.flips === 1 ? "" : "s"} · max ${formatPercentagePointDelta(metrics.largestDelta, 1)} pp`
-      )
-    );
-    impact.append(item);
-  });
+  const length = matrixEngagementLength(matrixUnits, activeModifier);
+  const lengthItem = createElement("div", "matrix-impact-item");
+  lengthItem.title = `Uniform average across all ${length.count} row/column pairings, including mirror matches. The median and range compare each pairing's own expected duration.`;
+  lengthItem.append(
+    createElement("span", "matrix-impact-name", "Engagement length"),
+    createElement("strong", "", `${formatMetric(length.average)} rounds avg`),
+    createElement(
+      "span",
+      "matrix-impact-detail",
+      `Median pairing ${formatMetric(length.median)} · pairing means ${formatMetric(length.minimum)}–${formatMetric(length.maximum)} rounds`
+    )
+  );
+  impact.append(lengthItem);
+  impact.classList.toggle("single", impact.children.length === 1);
+  impact.classList.toggle("double", impact.children.length === 2);
 
   const grid = createElement("div", "matrix-grid");
   grid.style.setProperty("--unit-total", matrixUnits.length);
   grid.classList.toggle("dense", matrixUnits.length > 8);
-  grid.classList.toggle("comparison", matrixScenario === "compare");
+  grid.classList.toggle("comparison", comparesPositionScenarios);
+  grid.classList.toggle("combat", matrixMode === "combat");
   grid.append(createElement("div", "matrix-corner", "Row win %"));
 
   matrixUnits.forEach(unit => {
@@ -2066,25 +2084,31 @@ function renderMatrix() {
       dragHandle.setAttribute("aria-label", `Drag ${rowUnit.name} to reorder the matrix`);
       rowHead.append(dragHandle);
     }
-    rowHead.append(
-      createUnitHeading(rowUnit),
-      createElement("span", "matrix-row-score", `${Math.round(strengths.get(rowUnit.id))}`)
-    );
+    rowHead.append(createUnitHeading(rowUnit));
+    if (matrixMode === "combat") {
+      const hasBonus = matrixAttackBonusIds.has(rowUnit.id);
+      const bonus = createElement("button", `matrix-row-bonus${hasBonus ? " active" : ""}`, "+1");
+      bonus.type = "button";
+      bonus.setAttribute("aria-pressed", String(hasBonus));
+      bonus.setAttribute(
+        "aria-label",
+        `${hasBonus ? "Remove" : "Give"} ${rowUnit.name} a +1 attack die bonus in every Combat Matrix matchup`
+      );
+      bonus.title = hasBonus
+        ? `Remove ${rowUnit.name}'s +1 attack die bonus`
+        : `Give ${rowUnit.name} +1 attack die in every matchup`;
+      bonus.addEventListener("click", () => toggleMatrixAttackBonus(rowUnit.id));
+      rowHead.append(bonus);
+    }
+    rowHead.append(createElement("span", "matrix-row-score", `${Math.round(strengths.get(rowUnit.id))}`));
     grid.append(rowHead);
 
     matrixUnits.forEach(opponent => {
-      if (rowUnit.id === opponent.id) {
-        const cell = createElement("div", "matrix-cell diagonal", "—");
-        cell.dataset.matrixRowId = rowUnit.id;
-        grid.append(cell);
-        return;
-      }
-
       const neutral = getMatrixMatchup(rowUnit, opponent);
-      const matchup = getMatrixMatchup(rowUnit, opponent, activeScenario.modifier);
+      const matchup = getMatrixMatchup(rowUnit, opponent, activeModifier);
       const cell = createElement("div", "matrix-cell");
       cell.dataset.matrixRowId = rowUnit.id;
-      if (matrixScenario === "compare") {
+      if (comparesPositionScenarios) {
         const comparisonGrid = createElement("div", "matrix-cell-comparison");
         matrixScenarioMatchups(rowUnit, opponent).forEach(({ scenario, matchup: scenarioMatchup }) => {
           const scenarioResult = createElement("span", "matrix-scenario-result");
@@ -2106,37 +2130,40 @@ function renderMatrix() {
         const delta = matchup.shareA - neutral.shareA;
         const flip = outcomeChanged(neutral, matchup);
         cell.classList.toggle("outcome-flip", flip);
-        cell.append(
+        const readout = [
           createElement("strong", "matrix-cell-chance", `${Math.round(matchup.shareA)}%`),
-          createElement("span", "matrix-cell-rounds", `◷ ${formatMetric(matchup.battleRounds)}r`),
-          createElement(
+          createElement("span", "matrix-cell-rounds", `◷ ${formatMetric(matchup.battleRounds)}r`)
+        ];
+        if (matrixMode !== "combat") {
+          readout.push(createElement(
             "span",
             `matrix-cell-delta${flip ? " winner-flip" : ""}`,
-            activeScenario.modifier
+            activeModifier
               ? `${formatPercentagePointDelta(delta)} pp${flip ? " · flip" : ""}`
               : "baseline"
-          )
-        );
+          ));
+        }
+        cell.append(...readout);
       }
-      const colour = semanticMatrixColour(matrixScenario === "compare" ? neutral.shareA : matchup.shareA);
+      const colour = semanticMatrixColour(comparesPositionScenarios ? neutral.shareA : matchup.shareA);
       cell.style.background = colour.background;
       cell.style.color = colour.foreground;
       cell.style.setProperty("--row-color", "#187659");
       cell.style.setProperty("--opponent-color", "#824a7a");
       cell.style.setProperty("--share", `${matchup.shareA}%`);
-      cell.title = matrixScenario === "compare"
+      cell.title = comparesPositionScenarios
         ? matrixScenarioMatchups(rowUnit, opponent)
           .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}${battlefieldBreakdownText(scenarioMatchup)}`)
           .join("\n")
-        : `${activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeScenario.modifier ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}${battlefieldBreakdownText(matchup)}`;
+        : `${matrixMode === "combat" ? "Overall" : activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeModifier ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}${battlefieldBreakdownText(matchup)}`;
       cell.setAttribute("role", "img");
       cell.setAttribute(
         "aria-label",
-        matrixScenario === "compare"
+        comparesPositionScenarios
           ? `${rowUnit.name} versus ${opponent.name}. ${matrixScenarioMatchups(rowUnit, opponent)
             .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)} percent`)
             .join(". ")}`
-          : `${activeScenario.label}: ${rowUnit.name} has a ${Math.round(matchup.shareA)} percent chance to beat ${opponent.name}`
+          : `${matrixMode === "combat" ? "Overall" : activeScenario.label}: ${rowUnit.name} has a ${Math.round(matchup.shareA)} percent chance to beat ${opponent.name}`
       );
       grid.append(cell);
     });
@@ -2582,7 +2609,7 @@ function renderHealth() {
   const sensitivityHeading = createElement("div", "health-panel-heading");
   sensitivityHeading.append(
     createElement("strong", "", "Model sensitivity"),
-    createElement("span", "", "Rules-only outcomes compared with the current battlefield assumptions")
+    createElement("span", "", "Charge-and-disruption outcomes compared with the current battlefield assumptions")
   );
   const sensitivityList = createElement("div", "health-sensitivity-list");
   [
@@ -3737,10 +3764,12 @@ function renderProfile() {
 
 function renderResults() {
   const matchupCount = shownUnits.length * (shownUnits.length - 1);
+  const matrixMatchupCount = shownUnits.length * shownUnits.length;
+  resultsPanel.classList.toggle("matrix-layout", activeView === "matrix");
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
-      ? `${shownUnits.length} units · ${matchupCount} matchups · ${matrixMode === "combat" ? "rules only" : "battlefield estimate"}`
+      ? `${shownUnits.length} units · ${matrixMatchupCount} matchups · charge + disruption`
       : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
   outcomeKey.hidden = activeView !== "bars";
 
@@ -3836,11 +3865,13 @@ unitGrid.addEventListener("click", event => {
     }
   });
   matrixCustomOrder = matrixCustomOrder.filter(id => id !== removedId);
+  matrixAttackBonusIds.delete(removedId);
   delete generatorConfig.units[removedId];
   deleteCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${removedId}`);
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
+  saveMatrixAttackBonusIds();
   saveGeneratorConfig();
   renderEditor();
   updateResults(true);
@@ -3874,10 +3905,12 @@ resetButton.addEventListener("click", () => {
   shownUnits = cloneUnits(DEFAULT_UNITS);
   matchupOrders = {};
   matrixCustomOrder = DEFAULT_UNITS.map(unit => unit.id);
+  matrixAttackBonusIds = new Set();
   matchupCache.clear();
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
+  saveMatrixAttackBonusIds();
   syncGeneratorConfigToUnits();
   renderEditor();
   renderResults();

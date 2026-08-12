@@ -24,6 +24,8 @@ export const DEFAULT_BATTLEFIELD_SETTINGS = Object.freeze({
   })
 });
 
+export const COMBAT_CHARGE_BONUS = 0;
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 function finiteChance(value, fallback) {
@@ -460,9 +462,342 @@ function finaliseMatchup(core, metrics, extras = {}) {
   };
 }
 
-export function resolveRulesMatchup(a, b, combatModifier = 0) {
-  const core = createCombatCore(a, b, combatModifier);
-  return finaliseMatchup(core, neutralMetrics(core), { mode: "combat" });
+function emptyRoundMetrics() {
+  return {
+    ...emptyMetrics(),
+    disruptionA: 0,
+    disruptionB: 0
+  };
+}
+
+function combineRoundMetrics(target, source, probability) {
+  Object.keys(target).forEach(key => {
+    target[key] += source[key] * probability;
+  });
+}
+
+function terminalRoundMetrics(winner, hpA, hpB, current) {
+  const result = emptyRoundMetrics();
+  const aWins = winner === "a";
+  result.chanceA = aWins ? 1 : 0;
+  result.weightedTurnsA = aWins ? current.aActivations : 0;
+  result.weightedHpA = aWins ? hpA : 0;
+  result.weightedTurnsB = aWins ? 0 : current.bActivations;
+  result.weightedHpB = aWins ? 0 : hpB;
+  result.battleTurns = current.battleTurns;
+  result.battleRounds = 1;
+  result.aActivations = current.aActivations;
+  result.bActivations = current.bActivations;
+  result.disruptionA = current.disruptionA || 0;
+  result.disruptionB = current.disruptionB || 0;
+  return result;
+}
+
+function prependRoundMetrics(downstream, current) {
+  const result = { ...downstream };
+  const chanceB = 1 - downstream.chanceA;
+  result.weightedTurnsA += current.aActivations * downstream.chanceA;
+  result.weightedTurnsB += current.bActivations * chanceB;
+  result.battleTurns += current.battleTurns;
+  result.battleRounds += 1;
+  result.aActivations += current.aActivations;
+  result.bActivations += current.bActivations;
+  result.disruptionA += current.disruptionA || 0;
+  result.disruptionB += current.disruptionB || 0;
+  return result;
+}
+
+function finaliseRoundCombat(a, b, metrics, effectiveStrikeA, effectiveStrikeB, extras = {}) {
+  const chanceAOverall = clamp(metrics.chanceA, 0, 1);
+  const chanceBOverall = 1 - chanceAOverall;
+  const chanceA = hitChance(a, b);
+  const chanceB = hitChance(b, a);
+  const hitsA = explodingHitDistribution(effectiveStrikeA, chanceA, b.hp);
+  const hitsB = explodingHitDistribution(effectiveStrikeB, chanceB, a.hp);
+  const shareA = chanceAOverall * 100;
+  return {
+    a,
+    b,
+    mode: "combat",
+    combatModifier: 0,
+    effectiveStrikeA,
+    effectiveStrikeB,
+    strikeAdjustmentA: effectiveStrikeA - a.strike,
+    strikeAdjustmentB: effectiveStrikeB - b.strike,
+    drillAdjustmentA: 0,
+    drillAdjustmentB: 0,
+    combatAdjustmentA: 0,
+    combatAdjustmentB: 0,
+    speedAttacker: null,
+    hitChanceA: chanceA,
+    hitChanceB: chanceB,
+    expectedHitsA: effectiveStrikeA * chanceA / (1 - 1 / 6),
+    expectedHitsB: effectiveStrikeB * chanceB / (1 - 1 / 6),
+    expectedChargeHitsA: (effectiveStrikeA + COMBAT_CHARGE_BONUS) * chanceA / (1 - 1 / 6),
+    expectedChargeHitsB: (effectiveStrikeB + COMBAT_CHARGE_BONUS) * chanceB / (1 - 1 / 6),
+    shareA,
+    victoryTurnsA: chanceAOverall > Number.EPSILON
+      ? metrics.weightedTurnsA / chanceAOverall
+      : null,
+    victoryTurnsB: chanceBOverall > Number.EPSILON
+      ? metrics.weightedTurnsB / chanceBOverall
+      : null,
+    victoryHpA: chanceAOverall > Number.EPSILON
+      ? clamp(metrics.weightedHpA / chanceAOverall, 1, a.hp)
+      : null,
+    victoryHpB: chanceBOverall > Number.EPSILON
+      ? clamp(metrics.weightedHpB / chanceBOverall, 1, b.hp)
+      : null,
+    battleTurns: metrics.battleTurns,
+    battleRounds: metrics.battleRounds,
+    aActivations: metrics.aActivations,
+    bActivations: metrics.bActivations,
+    averageDisruptionA: metrics.disruptionA,
+    averageDisruptionB: metrics.disruptionB,
+    soloTurnsA: expectedAttackTurnsToKill(hitsA, b.hp),
+    soloTurnsB: expectedAttackTurnsToKill(hitsB, a.hp),
+    winner: shareA > 50.000001 ? "a" : shareA < 49.999999 ? "b" : "even",
+    ...extras
+  };
+}
+
+/**
+ * Resolve a self-contained melee engagement under the simplified round model:
+ * one randomly selected unit charges and attacks first; wounds from the first
+ * strike disrupt only the second striker; later round initiative is an
+ * independent 50/50 choice; and disruption clears after each round. Charging
+ * itself adds no dice—the advantage comes from attacking and disrupting first.
+ */
+export function resolveRulesMatchup(a, b, options = {}) {
+  const attackBonusA = options && typeof options === "object"
+    ? clamp(Math.round(Number(options.attackBonusA) || 0), 0, 1)
+    : 0;
+  const attackBonusB = options && typeof options === "object"
+    ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 1)
+    : 0;
+  const chargeBonus = COMBAT_CHARGE_BONUS;
+  const chargeProbabilityA = 0.5;
+  const chargeProbabilityB = 0.5;
+  const effectiveStrikeA = Math.max(1, a.strike + attackBonusA);
+  const effectiveStrikeB = Math.max(1, b.strike + attackBonusB);
+  const chanceA = hitChance(a, b);
+  const chanceB = hitChance(b, a);
+  const distributionCache = new Map();
+  const roundCache = new Map();
+
+  function hitDistribution(attacker, pool, defenderHp) {
+    const key = `${attacker}:${pool}:${defenderHp}`;
+    if (!distributionCache.has(key)) {
+      distributionCache.set(
+        key,
+        explodingHitDistribution(pool, attacker === "a" ? chanceA : chanceB, defenderHp)
+      );
+    }
+    return distributionCache.get(key);
+  }
+
+  function currentRound(first, firstHits) {
+    const second = first === "a" ? "b" : "a";
+    const secondBasePool = second === "a" ? effectiveStrikeA : effectiveStrikeB;
+    const secondPool = Math.max(1, secondBasePool - firstHits);
+    const disruption = secondBasePool - secondPool;
+    return {
+      second,
+      secondPool,
+      current: {
+        aActivations: 1,
+        bActivations: 1,
+        battleTurns: 2,
+        disruptionA: second === "a" ? disruption : 0,
+        disruptionB: second === "b" ? disruption : 0
+      }
+    };
+  }
+
+  function roundMetrics(hpA, hpB) {
+    const key = `${hpA}:${hpB}`;
+    const cached = roundCache.get(key);
+    if (cached) return cached;
+
+    const aggregate = emptyRoundMetrics();
+    let selfLoopProbability = 0;
+
+    ["a", "b"].forEach(first => {
+      const firstIsA = first === "a";
+      const firstPool = firstIsA ? effectiveStrikeA : effectiveStrikeB;
+      const firstTargetHp = firstIsA ? hpB : hpA;
+      hitDistribution(first, firstPool, firstTargetHp).forEach((firstProbability, firstHits) => {
+        if (!firstProbability) return;
+        const firstWins = firstHits >= firstTargetHp;
+        if (firstWins) {
+          const branch = terminalRoundMetrics(
+            first,
+            hpA,
+            hpB,
+            {
+              aActivations: firstIsA ? 1 : 0,
+              bActivations: firstIsA ? 0 : 1,
+              battleTurns: 1
+            }
+          );
+          combineRoundMetrics(aggregate, branch, 0.5 * firstProbability);
+          return;
+        }
+
+        const remainingAfterFirstA = firstIsA ? hpA : hpA - firstHits;
+        const remainingAfterFirstB = firstIsA ? hpB - firstHits : hpB;
+        const { second, secondPool, current } = currentRound(first, firstHits);
+        const secondTargetHp = second === "a" ? remainingAfterFirstB : remainingAfterFirstA;
+        hitDistribution(second, secondPool, secondTargetHp).forEach((secondProbability, secondHits) => {
+          if (!secondProbability) return;
+          const probability = 0.5 * firstProbability * secondProbability;
+          const secondWins = secondHits >= secondTargetHp;
+          if (secondWins) {
+            const branch = terminalRoundMetrics(
+              second,
+              second === "b" ? remainingAfterFirstA - secondHits : remainingAfterFirstA,
+              second === "a" ? remainingAfterFirstB - secondHits : remainingAfterFirstB,
+              current
+            );
+            combineRoundMetrics(aggregate, branch, probability);
+            return;
+          }
+
+          if (firstHits === 0 && secondHits === 0) {
+            selfLoopProbability += probability;
+            return;
+          }
+
+          const remainingA = second === "b"
+            ? remainingAfterFirstA - secondHits
+            : remainingAfterFirstA;
+          const remainingB = second === "a"
+            ? remainingAfterFirstB - secondHits
+            : remainingAfterFirstB;
+          const branch = prependRoundMetrics(roundMetrics(remainingA, remainingB), current);
+          combineRoundMetrics(aggregate, branch, probability);
+        });
+      });
+    });
+
+    const exitProbability = 1 - selfLoopProbability;
+    const result = emptyRoundMetrics();
+    result.chanceA = aggregate.chanceA / exitProbability;
+    result.weightedHpA = aggregate.weightedHpA / exitProbability;
+    result.weightedHpB = aggregate.weightedHpB / exitProbability;
+    result.battleTurns = (aggregate.battleTurns + selfLoopProbability * 2) / exitProbability;
+    result.battleRounds = (aggregate.battleRounds + selfLoopProbability) / exitProbability;
+    result.aActivations = (aggregate.aActivations + selfLoopProbability) / exitProbability;
+    result.bActivations = (aggregate.bActivations + selfLoopProbability) / exitProbability;
+    result.disruptionA = aggregate.disruptionA / exitProbability;
+    result.disruptionB = aggregate.disruptionB / exitProbability;
+    result.weightedTurnsA = (
+      aggregate.weightedTurnsA + selfLoopProbability * result.chanceA
+    ) / exitProbability;
+    result.weightedTurnsB = (
+      aggregate.weightedTurnsB + selfLoopProbability * (1 - result.chanceA)
+    ) / exitProbability;
+    roundCache.set(key, result);
+    return result;
+  }
+
+  function openingMetrics(charger, chargeBonus) {
+    const chargerIsA = charger === "a";
+    const chargerPool = (chargerIsA ? effectiveStrikeA : effectiveStrikeB) + chargeBonus;
+    const targetHp = chargerIsA ? b.hp : a.hp;
+    const result = emptyRoundMetrics();
+
+    hitDistribution(charger, chargerPool, targetHp).forEach((firstProbability, firstHits) => {
+      if (!firstProbability) return;
+      if (firstHits >= targetHp) {
+        combineRoundMetrics(
+          result,
+          terminalRoundMetrics(
+            charger,
+            a.hp,
+            b.hp,
+            {
+              aActivations: chargerIsA ? 1 : 0,
+              bActivations: chargerIsA ? 0 : 1,
+              battleTurns: 1
+            }
+          ),
+          firstProbability
+        );
+        return;
+      }
+
+      const remainingAfterFirstA = chargerIsA ? a.hp : a.hp - firstHits;
+      const remainingAfterFirstB = chargerIsA ? b.hp - firstHits : b.hp;
+      const { second, secondPool, current } = currentRound(charger, firstHits);
+      const secondTargetHp = second === "a" ? remainingAfterFirstB : remainingAfterFirstA;
+      hitDistribution(second, secondPool, secondTargetHp).forEach((secondProbability, secondHits) => {
+        if (!secondProbability) return;
+        const probability = firstProbability * secondProbability;
+        if (secondHits >= secondTargetHp) {
+          combineRoundMetrics(
+            result,
+            terminalRoundMetrics(
+              second,
+              second === "b" ? remainingAfterFirstA - secondHits : remainingAfterFirstA,
+              second === "a" ? remainingAfterFirstB - secondHits : remainingAfterFirstB,
+              current
+            ),
+            probability
+          );
+          return;
+        }
+
+        const remainingA = second === "b"
+          ? remainingAfterFirstA - secondHits
+          : remainingAfterFirstA;
+        const remainingB = second === "a"
+          ? remainingAfterFirstB - secondHits
+          : remainingAfterFirstB;
+        const branch = prependRoundMetrics(roundMetrics(remainingA, remainingB), current);
+        combineRoundMetrics(result, branch, probability);
+      });
+    });
+    return result;
+  }
+
+  const regular = roundMetrics(a.hp, b.hp);
+  const aFirst = openingMetrics("a", 0);
+  const bFirst = openingMetrics("b", 0);
+  const aCharges = openingMetrics("a", chargeBonus);
+  const bCharges = openingMetrics("b", chargeBonus);
+  const overall = emptyRoundMetrics();
+  combineRoundMetrics(overall, aCharges, chargeProbabilityA);
+  combineRoundMetrics(overall, bCharges, chargeProbabilityB);
+
+  return finaliseRoundCombat(a, b, overall, effectiveStrikeA, effectiveStrikeB, {
+    attackBonusA,
+    attackBonusB,
+    chargeBonus,
+    chargeProbabilityA,
+    chargeProbabilityB,
+    chanceAWhenFirst: aFirst.chanceA,
+    chanceAWhenSecond: bFirst.chanceA,
+    chanceAWhenACharges: aCharges.chanceA,
+    chanceAWhenBCharges: bCharges.chanceA,
+    regularRoundChanceA: regular.chanceA,
+    chargeScenarios: [
+      {
+        id: "a-charges",
+        charger: "a",
+        probability: chargeProbabilityA,
+        shareA: aCharges.chanceA * 100,
+        battleRounds: aCharges.battleRounds
+      },
+      {
+        id: "b-charges",
+        charger: "b",
+        probability: chargeProbabilityB,
+        shareA: bCharges.chanceA * 100,
+        battleRounds: bCharges.battleRounds
+      }
+    ]
+  });
 }
 
 export function resolveOpeningEngagement(

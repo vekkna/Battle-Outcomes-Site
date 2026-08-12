@@ -77,26 +77,6 @@
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm9.5 1a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3ZM7.5 9a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm-3-3.4 1.8 4m4-3.8L9 9.5" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
               Similarity
             </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="bars">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></svg>
-              Matchups
-            </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="counters">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.2a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2Zm10 6.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2ZM4.4 5.3l7.2 5.4m-.1-1.9.4 2.2-2.2-.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Counters
-            </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="profile">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.25h12v1.5H2zM4 4.5a1.75 1.75 0 1 1 0 3.5 1.75 1.75 0 0 1 0-3.5Zm5 3.5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 9 8Zm3-5a1.75 1.75 0 1 1 0 3.5A1.75 1.75 0 0 1 12 3Z"/></svg>
-              Profile
-            </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="health">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h2.2l1.2-3 2.1 6 1.7-4H14M3 2.5h10v11H3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Health
-            </button>
-            <button class="view-button" type="button" role="tab" aria-selected="false" data-view="generator">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3zM5.5 6h5M5.5 8h5m-5 2h3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Generator
-            </button>
           </div>
         </div>
         <div class="result-stage" id="resultStage" aria-live="polite"></div>
@@ -121,8 +101,8 @@
         </button>
       </div>
       <div class="stats-row">
-        <label class="stat-control speed-control" title="In Battlefield estimate, Speed affects which unit is more likely to initiate a charge and which charge-distance bands it can reach"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
-        <label class="stat-control drill-control" title="In Battlefield estimate, Drill affects the chance that an initiated charge converts into a flank"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
+        <label class="stat-control speed-control" title="Speed rating (not used by the Combat Matrix)"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
+        <label class="stat-control drill-control" title="Drill rating (not used by the Combat Matrix)"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
         <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
         <label class="stat-control hp-control" title="Hits required to kill this unit"><span>HP</span><input type="number" min="1" max="99" inputmode="numeric" data-field="hp"></label>
