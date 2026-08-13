@@ -5,6 +5,7 @@ import {
   COMBAT_CHARGE_BONUS,
   DEFAULT_BATTLEFIELD_SETTINGS,
   accessibleChargeBands,
+  attackOutcomeDistribution,
   createCombatCore,
   drillConversionChance,
   effectiveStrikes,
@@ -148,6 +149,16 @@ test("an individual +1 attack bonus applies to every strike including the openin
   assert.ok(Math.abs(bothAdvantaged.shareA - 50) < 1e-9);
 });
 
+test("an individual attack advantage can be increased to +2 dice", () => {
+  const a = unit({ name: "A", strike: 5, defense: 4 });
+  const b = unit({ name: "B", strike: 5, defense: 4 });
+  const plusOne = resolveRulesMatchup(a, b, { attackBonusA: 1 });
+  const plusTwo = resolveRulesMatchup(a, b, { attackBonusA: 2 });
+  assert.equal(plusTwo.attackBonusA, 2);
+  assert.equal(plusTwo.effectiveStrikeA, 7);
+  assert.ok(plusTwo.shareA > plusOne.shareA);
+});
+
 test("mirror engagements produce complete symmetric results", () => {
   const cavalry = unit({ name: "Cavalry", strike: 7, defense: 4, hp: 7 });
   for (const options of [{}, { attackBonusA: 1, attackBonusB: 1 }]) {
@@ -265,6 +276,33 @@ test("exploding sixes can be disabled without changing the target number", () =>
   assert.equal(disabled.explodingSixes, false);
   assert.ok(Math.abs(disabled.expectedHitsA - disabled.effectiveStrikeA * disabled.hitChanceA) < 1e-12);
   assert.notEqual(disabled.shareA, enabled.shareA);
+});
+
+test("Critical Fail pools one retaliation die for every rolled 1", () => {
+  const outcomes = attackOutcomeDistribution(2, 0.5, 7, {
+    explodingSixes: false,
+    criticalFail: true
+  });
+  const probability = failures => outcomes
+    .filter(outcome => outcome.criticalFails === failures)
+    .reduce((sum, outcome) => sum + outcome.probability, 0);
+  assert.ok(Math.abs(probability(2) - 1 / 36) < 1e-12);
+  assert.ok(Math.abs(probability(1) - 10 / 36) < 1e-12);
+  assert.ok(Math.abs(probability(0) - 25 / 36) < 1e-12);
+  assert.ok(Math.abs(outcomes.reduce((sum, outcome) => sum + outcome.probability, 0) - 1) < 1e-12);
+});
+
+test("Critical Fail changes combat outcomes and preserves mirror symmetry", () => {
+  const a = unit({ name: "A", strike: 7, defense: 6 });
+  const b = unit({ name: "B", strike: 2, defense: 4, ap: true });
+  const disabled = resolveRulesMatchup(a, b, { criticalFail: false });
+  const enabled = resolveRulesMatchup(a, b, { criticalFail: true });
+  assert.equal(disabled.criticalFail, false);
+  assert.equal(enabled.criticalFail, true);
+  assert.notEqual(enabled.shareA, disabled.shareA);
+
+  const mirror = resolveRulesMatchup(a, a, { criticalFail: true });
+  assert.ok(Math.abs(mirror.shareA - 50) < 1e-9);
 });
 
 test("every matchup mode returns a finite probability within 0–100", () => {

@@ -8,6 +8,7 @@ import {
   resolveRulesMatchup,
   speedInitiativeShare
 } from "./combat-engine.js";
+import { generatorRosterMetrics as calculateGeneratorMetrics } from "./generator-engine.js";
 
 const STORAGE_KEY = "matchup-board-units-v1";
 const STORAGE_COOKIE = "matchup-board-units-v1";
@@ -20,13 +21,14 @@ const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
 const MATRIX_MODE_KEY = "matchup-board-matrix-mode-v1";
 const MATRIX_ATTACK_BONUS_KEY = "matchup-board-matrix-attack-bonus-v1";
 const EXPLODING_SIXES_KEY = "matchup-board-exploding-sixes-v1";
+const CRITICAL_FAIL_KEY = "matchup-board-critical-fail-v1";
 const BATTLEFIELD_SETTINGS_KEY = "matchup-board-battlefield-settings-v1";
 const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const UNIT_SETS_KEY = "matchup-board-unit-sets-v1";
 const UNIT_SET_COOKIE_PREFIX = "matchup-board-unit-set-v1-";
 const SIMILARITY_METRIC_KEY = "matchup-board-similarity-metric-v1";
-const GENERATOR_CONFIG_KEY = "matchup-board-generator-config-v1";
-const GENERATOR_UNIT_COOKIE_PREFIX = "matchup-board-generator-unit-v1-";
+const GENERATOR_CONFIG_KEY = "matchup-board-generator-config-v2";
+const GENERATOR_UNIT_COOKIE_PREFIX = "matchup-board-generator-unit-v2-";
 const MAX_UNITS = 16;
 const MIN_UNITS = 2;
 const PALETTE = ["#c95f4b", "#597fb3", "#d49a38", "#64865a", "#8b68a5", "#3e9a96"];
@@ -54,20 +56,18 @@ const RECOVERED_UNITS = [
 ];
 
 const GENERATOR_OBJECTIVES = [
-  { id: "balance", name: "Power balance", description: "Keep every unit's average win rate close to 50%." },
-  { id: "diversity", name: "Role diversity", description: "Separate centred matchup profiles while respecting the hard-counter limit." },
-  { id: "coverage", name: "Counter coverage", description: "Give every unit at least one clear favourable and unfavourable matchup." },
-  { id: "polarity", name: "Limit hard counters", description: "Penalize matchup results beyond the selected maximum advantage." },
-  { id: "stability", name: "Model stability", description: "Reduce excessive dependence on provisional battlefield openings." },
-  { id: "minimalChanges", name: "Minimal stat changes", description: "Prefer candidates that stay close to the current roster." }
+  { id: "diversity", name: "Unit diversity", description: "Spread out centred specialization profiles and create varied strengths and weaknesses." },
+  { id: "advantageImpact", name: "+1 advantage impact", description: "Make one extra attack die move units meaningfully up the Strength ranking." },
+  { id: "engagementLength", name: "Engagement length", description: "Keep the roster's average engagement close to your target number of rounds." },
+  { id: "mobilityTax", name: "Speed and Drill tax", description: "Make high-mobility, high-drill units weaker in the base combat ranking." },
+  { id: "apTax", name: "AP attack-die tax", description: "Give AP units fewer attack dice than otherwise similar non-AP units." }
 ];
 
 const GENERATOR_STATS = [
   { id: "speed", label: "SPD", name: "Speed", min: 0, max: 99 },
   { id: "drill", label: "DRL", name: "Drill", min: 0, max: 99 },
   { id: "strike", label: "STR", name: "Strength", min: 1, max: 99 },
-  { id: "defense", label: "DEF", name: "Defence", min: 1, max: 6 },
-  { id: "hp", label: "HP", name: "HP", min: 1, max: 99 }
+  { id: "defense", label: "DEF", name: "Defence", min: 1, max: 6 }
 ];
 
 const COMBAT_SCENARIOS = [
@@ -80,6 +80,7 @@ const unitGrid = document.querySelector("#unitGrid");
 const unitCount = document.querySelector("#unitCount");
 const addUnitButton = document.querySelector("#addUnitButton");
 const resetButton = document.querySelector("#resetButton");
+const generatorButton = document.querySelector("#generatorButton");
 const setManager = document.querySelector("#setManager");
 const setsButton = document.querySelector("#setsButton");
 const setsCount = document.querySelector("#setsCount");
@@ -91,9 +92,11 @@ const setEmpty = document.querySelector("#setEmpty");
 const saveState = document.querySelector("#saveState");
 const resultStage = document.querySelector("#resultStage");
 const resultsPanel = document.querySelector(".results-panel");
+const resultsTitle = document.querySelector("#resultsTitle");
 const resultsMeta = document.querySelector("#resultsMeta");
 const outcomeKey = document.querySelector(".outcome-key");
 const explodingSixesToggle = document.querySelector("#explodingSixesToggle");
+const criticalFailToggle = document.querySelector("#criticalFailToggle");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
 const viewButtons = [...document.querySelectorAll(".view-button")];
 
@@ -105,8 +108,9 @@ let matrixSort = loadMatrixSort();
 let matrixScenario = loadMatrixScenario();
 let matrixCustomOrder = loadMatrixCustomOrder();
 let matrixMode = "combat";
-let matrixAttackBonusIds = loadMatrixAttackBonusIds();
+let matrixAttackBonuses = loadMatrixAttackBonuses();
 let explodingSixes = loadExplodingSixes();
+let criticalFail = loadCriticalFail();
 let battlefieldSettings = loadBattlefieldSettings();
 let counterThreshold = loadCounterThreshold();
 let similarityMetric = loadSimilarityMetric();
@@ -132,6 +136,12 @@ function safeNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
+function safeDecimal(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function sanitiseUnits(value) {
   return value.slice(0, MAX_UNITS).map((unit, index) => ({
     id: String(unit.id || `unit-${Date.now()}-${index}`),
@@ -141,7 +151,7 @@ function sanitiseUnits(value) {
     speed: safeNumber(unit.speed, 0, 0, 99),
     ap: Boolean(unit.ap),
     defense: safeNumber(unit.defense, 4, 1, 6),
-    hp: safeNumber(unit.hp, 7, 1, 99),
+    hp: 7,
     color: /^#[0-9a-f]{6}$/i.test(unit.color) ? unit.color : PALETTE[index % PALETTE.length]
   }));
 }
@@ -297,30 +307,37 @@ function saveUnitSets() {
   });
 }
 
-function defaultGeneratorUnitConstraint() {
+function defaultGeneratorUnitConstraint(unit = {}) {
+  const current = {
+    speed: safeNumber(unit.speed, 0, 0, 99),
+    drill: safeNumber(unit.drill, 0, 0, 99),
+    strike: safeNumber(unit.strike, 5, 1, 99),
+    defense: safeNumber(unit.defense, 4, 1, 6)
+  };
+  const radius = { speed: 2, drill: 2, strike: 3, defense: 1 };
   return {
     tags: "",
     goodAgainst: "",
     weakAgainst: "",
-    ap: "any",
+    ap: "locked",
     stats: Object.fromEntries(GENERATOR_STATS.map(stat => [stat.id, {
-      min: stat.min,
-      max: stat.max,
-      locked: false
+      min: Math.max(stat.min, current[stat.id] - radius[stat.id]),
+      max: Math.min(stat.max, current[stat.id] + radius[stat.id]),
+      locked: stat.id === "speed" || stat.id === "drill"
     }]))
   };
 }
 
-function normaliseGeneratorUnitConstraint(value) {
-  const fallback = defaultGeneratorUnitConstraint();
+function normaliseGeneratorUnitConstraint(value, unit) {
+  const fallback = defaultGeneratorUnitConstraint(unit);
   const saved = value && typeof value === "object" ? value : {};
   const stats = {};
   GENERATOR_STATS.forEach(stat => {
     const range = saved.stats?.[stat.id] || {};
     stats[stat.id] = {
-      min: safeNumber(range.min, stat.min, stat.min, stat.max),
-      max: safeNumber(range.max, stat.max, stat.min, stat.max),
-      locked: Boolean(range.locked)
+      min: safeNumber(range.min, fallback.stats[stat.id].min, stat.min, stat.max),
+      max: safeNumber(range.max, fallback.stats[stat.id].max, stat.min, stat.max),
+      locked: range.locked === undefined ? fallback.stats[stat.id].locked : Boolean(range.locked)
     };
   });
   return {
@@ -328,7 +345,7 @@ function normaliseGeneratorUnitConstraint(value) {
     tags: String(saved.tags || "").slice(0, 120),
     goodAgainst: String(saved.goodAgainst || "").slice(0, 120),
     weakAgainst: String(saved.weakAgainst || "").slice(0, 120),
-    ap: ["any", "on", "off", "locked"].includes(saved.ap) ? saved.ap : "any",
+    ap: ["any", "on", "off", "locked"].includes(saved.ap) ? saved.ap : fallback.ap,
     stats
   };
 }
@@ -337,18 +354,22 @@ function normaliseGeneratorConfig(value) {
   const saved = value && typeof value === "object" ? value : {};
   const objectives = {};
   GENERATOR_OBJECTIVES.forEach(objective => {
-    const fallback = objective.id === "stability" || objective.id === "minimalChanges" ? 1 : 3;
+    const fallback = objective.id === "mobilityTax" || objective.id === "apTax" ? 2 : 3;
     objectives[objective.id] = safeNumber(saved.objectives?.[objective.id], fallback, 0, 3);
   });
   const unitConstraints = {};
   units.forEach(unit => {
-    unitConstraints[unit.id] = normaliseGeneratorUnitConstraint(saved.units?.[unit.id]);
+    unitConstraints[unit.id] = normaliseGeneratorUnitConstraint(saved.units?.[unit.id], unit);
   });
   return {
     objectives,
     settings: {
-      clearAdvantage: safeNumber(saved.settings?.clearAdvantage, 60, 51, 75),
-      hardCounter: safeNumber(saved.settings?.hardCounter, 80, 65, 95),
+      diversityTarget: safeDecimal(saved.settings?.diversityTarget, 10, 2, 30),
+      advantageRankTarget: safeDecimal(saved.settings?.advantageRankTarget, 1.5, .25, 5),
+      engagementTarget: safeDecimal(saved.settings?.engagementTarget, 3.75, 1.5, 8),
+      engagementTolerance: safeDecimal(saved.settings?.engagementTolerance, .5, .1, 2),
+      mobilityTaxTarget: safeDecimal(saved.settings?.mobilityTaxTarget, 1, .1, 5),
+      apDiceGapTarget: safeDecimal(saved.settings?.apDiceGapTarget, 2, .5, 6),
       candidateCount: safeNumber(saved.settings?.candidateCount, 5, 3, 12)
     },
     units: unitConstraints
@@ -403,7 +424,7 @@ function saveGeneratorConfig() {
 
 function generatorConstraintFor(unit) {
   if (!generatorConfig.units[unit.id]) {
-    generatorConfig.units[unit.id] = defaultGeneratorUnitConstraint();
+    generatorConfig.units[unit.id] = defaultGeneratorUnitConstraint(unit);
   }
   return generatorConfig.units[unit.id];
 }
@@ -445,7 +466,7 @@ function loadUnits() {
 
 function loadView() {
   const saved = localStorage.getItem(VIEW_KEY);
-  return ["matrix", "similarity"].includes(saved) ? saved : "matrix";
+  return ["matrix", "similarity", "generator"].includes(saved) ? saved : "matrix";
 }
 
 function loadSimilarityMetric() {
@@ -483,6 +504,25 @@ function saveExplodingSixes() {
     // The selected rule still works for the current session.
   }
   writeCookieValue(EXPLODING_SIXES_KEY, saved);
+}
+
+function loadCriticalFail() {
+  try {
+    const saved = readCookieValue(CRITICAL_FAIL_KEY) ?? localStorage.getItem(CRITICAL_FAIL_KEY);
+    return saved === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+function saveCriticalFail() {
+  const saved = String(criticalFail);
+  try {
+    localStorage.setItem(CRITICAL_FAIL_KEY, saved);
+  } catch (_) {
+    // The selected rule still works for the current session.
+  }
+  writeCookieValue(CRITICAL_FAIL_KEY, saved);
 }
 
 function loadMatrixSort() {
@@ -536,21 +576,27 @@ function saveMatrixCustomOrder() {
   writeCookieValue(MATRIX_CUSTOM_ORDER_KEY, value);
 }
 
-function loadMatrixAttackBonusIds() {
+function loadMatrixAttackBonuses() {
   try {
     const saved = JSON.parse(
       readCookieValue(MATRIX_ATTACK_BONUS_KEY)
       || localStorage.getItem(MATRIX_ATTACK_BONUS_KEY)
       || "[]"
     );
-    return new Set(Array.isArray(saved) ? saved.map(String) : []);
+    if (Array.isArray(saved)) {
+      return new Map(saved.map(id => [String(id), 1]));
+    }
+    return new Map(Object.entries(saved || {}).map(([id, value]) => [
+      String(id),
+      Math.min(2, Math.max(0, Math.round(Number(value) || 0)))
+    ]).filter(([, value]) => value > 0));
   } catch (_) {
-    return new Set();
+    return new Map();
   }
 }
 
-function saveMatrixAttackBonusIds() {
-  const value = JSON.stringify([...matrixAttackBonusIds]);
+function saveMatrixAttackBonuses() {
+  const value = JSON.stringify(Object.fromEntries(matrixAttackBonuses));
   try {
     localStorage.setItem(MATRIX_ATTACK_BONUS_KEY, value);
   } catch (_) {
@@ -561,10 +607,10 @@ function saveMatrixAttackBonusIds() {
 
 function pruneMatrixAttackBonusIds() {
   const activeIds = new Set(units.map(unit => unit.id));
-  const next = new Set([...matrixAttackBonusIds].filter(id => activeIds.has(id)));
-  if (next.size === matrixAttackBonusIds.size) return;
-  matrixAttackBonusIds = next;
-  saveMatrixAttackBonusIds();
+  const next = new Map([...matrixAttackBonuses].filter(([id]) => activeIds.has(id)));
+  if (next.size === matrixAttackBonuses.size) return;
+  matrixAttackBonuses = next;
+  saveMatrixAttackBonuses();
 }
 
 function loadCounterThreshold() {
@@ -678,7 +724,6 @@ function renderEditor() {
     const drillInput = card.querySelector('[data-field="drill"]');
     const speedInput = card.querySelector('[data-field="speed"]');
     const defenseInput = card.querySelector('[data-field="defense"]');
-    const hpInput = card.querySelector('[data-field="hp"]');
     const apInput = card.querySelector('[data-field="ap"]');
     const removeButton = card.querySelector('[data-action="remove"]');
 
@@ -688,7 +733,6 @@ function renderEditor() {
     drillInput.value = unit.drill;
     speedInput.value = unit.speed;
     defenseInput.value = unit.defense;
-    hpInput.value = unit.hp;
     apInput.checked = unit.ap;
     removeButton.disabled = units.length <= MIN_UNITS;
     removeButton.setAttribute("aria-label", `Remove ${unit.name}`);
@@ -1271,7 +1315,7 @@ function matchupKey(
   ].join(":");
   const settingsPart = mode === "battlefield"
     ? battlefieldSettingsKey(battlefieldSettings)
-    : `charge-disruption-v5:exploding-${explodingSixes ? "on" : "off"}`;
+    : `charge-disruption-v6:exploding-${explodingSixes ? "on" : "off"}:critical-${criticalFail ? "on" : "off"}`;
   const effectiveModifier = mode === "battlefield" ? combatModifier : 0;
   const bonusPart = mode === "combat" ? `${attackBonusA}:${attackBonusB}` : "0:0";
   return `${mode}:${settingsPart}:${effectiveModifier}:${bonusPart}|${unitKey(a)}|${unitKey(b)}`;
@@ -1303,6 +1347,7 @@ function reverseCombatMatchup(matchup) {
     expectedHitsB: matchup.expectedHitsA,
     expectedChargeHitsA: matchup.expectedChargeHitsB,
     expectedChargeHitsB: matchup.expectedChargeHitsA,
+    criticalFail: matchup.criticalFail,
     attackBonusA: matchup.attackBonusB,
     attackBonusB: matchup.attackBonusA,
     chargeProbabilityA: matchup.chargeProbabilityB,
@@ -1350,14 +1395,14 @@ function getMatchup(
   }
   const matchup = mode === "battlefield"
     ? resolveBattlefieldMatchup(a, b, combatModifier, battlefieldSettings)
-    : resolveRulesMatchup(a, b, { attackBonusA, attackBonusB, explodingSixes });
+    : resolveRulesMatchup(a, b, { attackBonusA, attackBonusB, explodingSixes, criticalFail });
   matchupCache.set(key, matchup);
   return matchup;
 }
 
 function getMatrixMatchup(a, b, combatModifier = 0) {
-  const attackBonusA = matrixMode === "combat" && matrixAttackBonusIds.has(a.id) ? 1 : 0;
-  const attackBonusB = matrixMode === "combat" && matrixAttackBonusIds.has(b.id) ? 1 : 0;
+  const attackBonusA = matrixMode === "combat" ? matrixAttackBonuses.get(a.id) || 0 : 0;
+  const attackBonusB = matrixMode === "combat" ? matrixAttackBonuses.get(b.id) || 0 : 0;
   return getMatchup(
     a,
     b,
@@ -1393,7 +1438,10 @@ function matchupInitiativeText(matchup) {
   const sixes = matchup.explodingSixes
     ? "Every natural 6 scores a hit and rolls another die against the same target number; additional 6s repeat the process."
     : "Natural 6s do not generate additional dice.";
-  return `Both possible chargers are weighted equally. Charging adds no dice: its advantage is striking first and disrupting the reply. In later rounds either unit is equally likely to strike first. Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die. ${sixes}`;
+  const failures = matchup.criticalFail
+    ? "Every natural 1 lets the living defender immediately retaliate with one die per 1, using its normal target number; these retaliation dice can explode but do not cause further Critical Fail reactions."
+    : "Critical Fail is disabled.";
+  return `Both possible chargers are weighted equally. Charging adds no dice: its advantage is striking first and disrupting the reply. In later rounds either unit is equally likely to strike first. Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die. ${sixes} ${failures}`;
 }
 
 function matchupTitle(matchup) {
@@ -1732,9 +1780,10 @@ function markMatrixDropRow(grid, rowId, insertAfter) {
 }
 
 function toggleMatrixAttackBonus(unitId) {
-  if (matrixAttackBonusIds.has(unitId)) matrixAttackBonusIds.delete(unitId);
-  else matrixAttackBonusIds.add(unitId);
-  saveMatrixAttackBonusIds();
+  const nextBonus = ((matrixAttackBonuses.get(unitId) || 0) + 1) % 3;
+  if (nextBonus) matrixAttackBonuses.set(unitId, nextBonus);
+  else matrixAttackBonuses.delete(unitId);
+  saveMatrixAttackBonuses();
   matchupCache.clear();
   renderMatrix();
 }
@@ -2112,17 +2161,20 @@ function renderMatrix() {
     }
     rowHead.append(createUnitHeading(rowUnit));
     if (matrixMode === "combat") {
-      const hasBonus = matrixAttackBonusIds.has(rowUnit.id);
-      const bonus = createElement("button", `matrix-row-bonus${hasBonus ? " active" : ""}`, "+1");
+      const attackBonus = matrixAttackBonuses.get(rowUnit.id) || 0;
+      const nextBonus = (attackBonus + 1) % 3;
+      const bonus = createElement(
+        "button",
+        `matrix-row-bonus${attackBonus ? " active" : ""}`,
+        attackBonus ? `+${attackBonus}` : "+0"
+      );
       bonus.type = "button";
-      bonus.setAttribute("aria-pressed", String(hasBonus));
+      bonus.dataset.bonus = String(attackBonus);
       bonus.setAttribute(
         "aria-label",
-        `${hasBonus ? "Remove" : "Give"} ${rowUnit.name} a +1 attack die bonus in every Combat Matrix matchup`
+        `${rowUnit.name} currently has ${attackBonus ? `+${attackBonus}` : "no"} attack dice; click to set ${nextBonus ? `+${nextBonus}` : "no bonus"}`
       );
-      bonus.title = hasBonus
-        ? `Remove ${rowUnit.name}'s +1 attack die bonus`
-        : `Give ${rowUnit.name} +1 attack die in every matchup`;
+      bonus.title = `${rowUnit.name}: ${attackBonus ? `+${attackBonus}` : "no"} attack dice. Click for ${nextBonus ? `+${nextBonus}` : "no bonus"}.`;
       bonus.addEventListener("click", () => toggleMatrixAttackBonus(rowUnit.id));
       rowHead.append(bonus);
     }
@@ -2174,9 +2226,6 @@ function renderMatrix() {
       const colour = semanticMatrixColour(comparesPositionScenarios ? neutral.shareA : matchup.shareA);
       cell.style.background = colour.background;
       cell.style.color = colour.foreground;
-      cell.style.setProperty("--row-color", "#187659");
-      cell.style.setProperty("--opponent-color", "#824a7a");
-      cell.style.setProperty("--share", `${matchup.shareA}%`);
       cell.title = comparesPositionScenarios
         ? matrixScenarioMatchups(rowUnit, opponent)
           .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}${battlefieldBreakdownText(scenarioMatchup)}`)
@@ -2675,16 +2724,12 @@ function parseGeneratorTags(value) {
 }
 
 function generatorUnitStatus(unit, constraint) {
-  const roleTags = parseGeneratorTags(constraint.tags);
-  const intents = parseGeneratorTags(constraint.goodAgainst).length + parseGeneratorTags(constraint.weakAgainst).length;
   const lockedStats = GENERATOR_STATS.filter(stat => constraint.stats[stat.id].locked).length;
   const rangedStats = GENERATOR_STATS.filter(stat => {
     const range = constraint.stats[stat.id];
     return !range.locked && (range.min !== stat.min || range.max !== stat.max);
   }).length;
   const parts = [];
-  if (roleTags.length) parts.push(roleTags.join(", "));
-  if (intents) parts.push(`${intents} matchup intent${intents === 1 ? "" : "s"}`);
   if (lockedStats) parts.push(`${lockedStats} fixed`);
   if (rangedStats) parts.push(`${rangedStats} ranged`);
   if (constraint.ap !== "any") parts.push("AP constrained");
@@ -2692,21 +2737,12 @@ function generatorUnitStatus(unit, constraint) {
 }
 
 function generatorValidation() {
-  const definedTags = new Set();
-  units.forEach(unit => {
-    parseGeneratorTags(generatorConstraintFor(unit).tags).forEach(tag => definedTags.add(tag.toLowerCase()));
-  });
-
   let constrainedUnits = 0;
   let lockedStats = 0;
   let invalidRanges = 0;
-  const unknownTags = new Set();
   units.forEach(unit => {
     const constraint = generatorConstraintFor(unit);
-    let constrained = constraint.ap !== "any"
-      || Boolean(parseGeneratorTags(constraint.tags).length)
-      || Boolean(parseGeneratorTags(constraint.goodAgainst).length)
-      || Boolean(parseGeneratorTags(constraint.weakAgainst).length);
+    let constrained = constraint.ap !== "any";
     GENERATOR_STATS.forEach(stat => {
       const range = constraint.stats[stat.id];
       if (range.locked) {
@@ -2717,15 +2753,11 @@ function generatorValidation() {
         if (range.min > range.max) invalidRanges += 1;
       }
     });
-    [...parseGeneratorTags(constraint.goodAgainst), ...parseGeneratorTags(constraint.weakAgainst)].forEach(tag => {
-      if (!definedTags.has(tag.toLowerCase())) unknownTags.add(tag);
-    });
     if (constrained) constrainedUnits += 1;
   });
 
   const activeObjectives = GENERATOR_OBJECTIVES.filter(objective => generatorConfig.objectives[objective.id] > 0).length;
-  const targetConflict = generatorConfig.settings.hardCounter <= generatorConfig.settings.clearAdvantage;
-  return { activeObjectives, constrainedUnits, lockedStats, invalidRanges, unknownTags, targetConflict };
+  return { activeObjectives, constrainedUnits, lockedStats, invalidRanges };
 }
 
 function updateGeneratorView(view) {
@@ -2764,7 +2796,7 @@ function updateGeneratorView(view) {
   const summaryTitle = view.querySelector("[data-generator-summary-title]");
   const summaryText = view.querySelector("[data-generator-summary-text]");
   const summaryMark = view.querySelector(".generator-summary-mark");
-  const issues = status.invalidRanges + (status.targetConflict ? 1 : 0) + status.unknownTags.size;
+  const issues = status.invalidRanges;
   summary.classList.toggle("warning", Boolean(issues || !status.activeObjectives));
   summaryMark.textContent = issues || !status.activeObjectives ? "!" : "✓";
   const generateButton = view.querySelector("[data-action=generate-rosters]");
@@ -2775,18 +2807,12 @@ function updateGeneratorView(view) {
   if (status.invalidRanges) {
     summaryTitle.textContent = "Fix the highlighted stat ranges";
     summaryText.textContent = `${status.invalidRanges} minimum value${status.invalidRanges === 1 ? " is" : "s are"} above its maximum.`;
-  } else if (status.targetConflict) {
-    summaryTitle.textContent = "Separate the matchup targets";
-    summaryText.textContent = "The hard-counter ceiling must be higher than the clear-advantage threshold.";
-  } else if (status.unknownTags.size) {
-    summaryTitle.textContent = "Some matchup tags are not defined";
-    summaryText.textContent = `Add these to a unit's role tags: ${[...status.unknownTags].join(", ")}.`;
   } else if (!status.activeObjectives) {
     summaryTitle.textContent = "Choose at least one objective";
     summaryText.textContent = "Every optimization priority is currently switched off.";
   } else {
     summaryTitle.textContent = "Configuration ready";
-    summaryText.textContent = `${status.activeObjectives} objectives active · ${status.constrainedUnits} of ${units.length} units constrained · ${status.lockedStats} stats fixed.`;
+    summaryText.textContent = `${status.activeObjectives} goals active · ${status.constrainedUnits} of ${units.length} units constrained · ${status.lockedStats} stats fixed.`;
   }
 }
 
@@ -2863,7 +2889,7 @@ function generatorShareMatrix(roster, mode = "combat") {
   return matrix;
 }
 
-function generatorRosterMetrics(roster) {
+function legacyGeneratorRosterMetrics(roster) {
   const matrix = generatorShareMatrix(roster);
   const unitTotal = roster.length;
   const averages = roster.map((_, index) => {
@@ -3007,6 +3033,34 @@ function generatorRosterMetrics(roster) {
   };
 }
 
+function generatorRosterMetrics(roster) {
+  const metrics = calculateGeneratorMetrics(
+    roster,
+    generatorConfig.settings,
+    generatorConfig.objectives,
+    { explodingSixes, criticalFail }
+  );
+  let changeTotal = 0;
+  let changeParts = 0;
+  roster.forEach((unit, index) => {
+    const original = units[index];
+    GENERATOR_STATS.forEach(stat => {
+      const range = generatorConstraintFor(original).stats[stat.id];
+      const scale = Math.max(1, Math.min(12, range.max - range.min));
+      changeTotal += Math.min(1, Math.abs(unit[stat.id] - original[stat.id]) / scale);
+      changeParts += 1;
+    });
+    changeTotal += unit.ap === original.ap ? 0 : 1;
+    changeParts += 1;
+  });
+  const changeDistance = changeTotal / Math.max(1, changeParts);
+  return {
+    ...metrics,
+    changeDistance,
+    score: Math.max(0, metrics.score - changeDistance * 3)
+  };
+}
+
 function constrainedGeneratorSeed() {
   return units.map(unit => {
     const constraint = generatorConstraintFor(unit);
@@ -3139,7 +3193,7 @@ function renderGeneratorCandidates(view) {
   const copy = createElement("div");
   copy.append(
     createElement("strong", "", "Generated candidates"),
-    createElement("span", "", "Scores are fast estimates; apply a roster to calculate its full outcome matrix.")
+    createElement("span", "", "Scores estimate the five selected goals; apply a roster to calculate its exact outcome matrix.")
   );
   heading.append(copy, createElement("span", "generator-step", `04 · ${generatorCandidates.length} results`));
   const list = createElement("div", "generator-candidate-list");
@@ -3158,10 +3212,11 @@ function renderGeneratorCandidates(view) {
     cardHeading.append(rank, applyButton);
     const metrics = createElement("div", "generator-candidate-metrics");
     [
-      ["Balance", `${formatMetric(candidate.metrics.balanceError)} pts`],
-      ["Role separation", `${formatMetric(candidate.metrics.roleSeparation)} pts`],
-      ["Coverage", `${candidate.metrics.coveredUnits}/${units.length}`],
-      ["Hard counters", String(candidate.metrics.extremePairs)]
+      ["Specialization", `${formatMetric(candidate.metrics.roleSeparation)} pts`],
+      ["+1 rank gain", `${formatMetric(candidate.metrics.advantageRankGain)} places`],
+      ["Est. engagement", `${formatMetric(candidate.metrics.engagementRounds)} rounds`],
+      ["Mobility slope", `${formatMetric(candidate.metrics.mobilitySlope)} pp/stat`],
+      ["AP dice gap", candidate.metrics.apDiceGap === null ? "N/A" : `${formatMetric(candidate.metrics.apDiceGap)} dice`]
     ].forEach(([label, value]) => {
       const metric = createElement("div");
       metric.append(createElement("span", "", label), createElement("strong", "", value));
@@ -3203,8 +3258,8 @@ function renderGenerator() {
   const objectivesHeading = createElement("div", "generator-section-heading");
   const objectivesCopy = createElement("div");
   objectivesCopy.append(
-    createElement("strong", "", "What should the generator optimize?"),
-    createElement("span", "", "Priorities are relative: High matters more than Medium or Low.")
+    createElement("strong", "", "Choose the balancing priorities"),
+    createElement("span", "", "Every goal can be turned off or weighted Low, Medium, or High.")
   );
   objectivesHeading.append(objectivesCopy, createElement("span", "generator-step", "01 · objectives"));
   const objectiveGrid = createElement("div", "generator-objectives");
@@ -3227,16 +3282,20 @@ function renderGenerator() {
   const targetsHeading = createElement("div", "generator-section-heading");
   const targetsCopy = createElement("div");
   targetsCopy.append(
-    createElement("strong", "", "Define healthy matchup targets"),
-    createElement("span", "", "These values turn roster health into concrete optimization goals.")
+    createElement("strong", "", "Set the desired strength of each effect"),
+    createElement("span", "", "These targets define what a good candidate means; the priorities above control their importance.")
   );
   targetsHeading.append(targetsCopy, createElement("span", "generator-step", "02 · targets"));
   const targets = createElement("div", "generator-targets");
   [
-    ["clearAdvantage", "Clear advantage", "Counts as a meaningful favourable or unfavourable matchup.", 51, 75, "%"],
-    ["hardCounter", "Hard-counter ceiling", "Penalize matchups more decisive than this.", 65, 95, "%"],
-    ["candidateCount", "Candidate rosters", "How many of the best alternatives to keep.", 3, 12, ""]
-  ].forEach(([id, label, description, min, max, suffix]) => {
+    ["diversityTarget", "Specialization separation", "Target nearest-neighbour distance on centred matchup profiles.", 2, 30, .5, "pts"],
+    ["advantageRankTarget", "+1 target rank gain", "Average places gained by non-leading units after receiving +1 attack die.", .25, 5, .25, "places"],
+    ["engagementTarget", "Average engagement", "Desired average length across all pairings, including mirrors.", 1.5, 8, .25, "rounds"],
+    ["engagementTolerance", "Length tolerance", "How far engagement length may drift before its score falls sharply.", .1, 2, .1, "± rounds"],
+    ["mobilityTaxTarget", "Speed/Drill power tax", "Desired base win-rate decline per combined Speed or Drill point.", .1, 5, .1, "pp/stat"],
+    ["apDiceGapTarget", "AP attack-die gap", "How many fewer attack dice an AP unit should have than its closest non-AP peer.", .5, 6, .5, "dice"],
+    ["candidateCount", "Candidate rosters", "How many of the best alternatives to keep.", 3, 12, 1, ""]
+  ].forEach(([id, label, description, min, max, step, suffix]) => {
     const card = createElement("label", "generator-target");
     const copy = createElement("span", "generator-target-copy");
     copy.append(createElement("strong", "", label), createElement("span", "", description));
@@ -3245,7 +3304,7 @@ function renderGenerator() {
     input.type = "number";
     input.min = String(min);
     input.max = String(max);
-    input.step = "1";
+    input.step = String(step);
     input.value = String(generatorConfig.settings[id]);
     input.dataset.generatorSetting = id;
     input.setAttribute("aria-label", label);
@@ -3261,7 +3320,7 @@ function renderGenerator() {
   const unitsCopy = createElement("div");
   unitsCopy.append(
     createElement("strong", "", "Constrain individual units"),
-    createElement("span", "", "Use comma-separated role tags to express relationships such as anti-cavalry or vulnerable to ranged.")
+    createElement("span", "", "Limit which stats and AP values the search may change, or lock important unit identities in place.")
   );
   unitsHeading.append(unitsCopy, createElement("span", "generator-step", "03 · units"));
   const unitList = createElement("div", "generator-units");
@@ -3282,23 +3341,6 @@ function renderGenerator() {
 
     const body = createElement("div", "generator-unit-body");
     const roleGrid = createElement("div", "generator-role-grid");
-    [
-      ["tags", "Role tags", "cavalry, mobile", "What this unit is"],
-      ["goodAgainst", "Should be good against", "infantry", "Matches other units' role tags"],
-      ["weakAgainst", "Should be vulnerable to", "anti-cavalry", "Matches other units' role tags"]
-    ].forEach(([field, label, placeholder, hint]) => {
-      const control = createElement("label", "generator-text-control");
-      control.append(createElement("span", "", label));
-      const input = createElement("input");
-      input.type = "text";
-      input.value = constraint[field];
-      input.placeholder = placeholder;
-      input.maxLength = 120;
-      input.dataset.generatorUnit = unit.id;
-      input.dataset.generatorField = field;
-      control.append(input, createElement("small", "", hint));
-      roleGrid.append(control);
-    });
     const apControl = createElement("label", "generator-text-control generator-ap-control");
     apControl.append(createElement("span", "", "Armour piercing"));
     const apSelect = createElement("select");
@@ -3387,13 +3429,19 @@ function renderGenerator() {
       generatorConfig.objectives[target.dataset.generatorObjective] = safeNumber(target.value, 0, 0, 3);
     } else if (target.dataset.generatorSetting) {
       const limits = {
-        clearAdvantage: [51, 75],
-        hardCounter: [65, 95],
+        diversityTarget: [2, 30],
+        advantageRankTarget: [.25, 5],
+        engagementTarget: [1.5, 8],
+        engagementTolerance: [.1, 2],
+        mobilityTaxTarget: [.1, 5],
+        apDiceGapTarget: [.5, 6],
         candidateCount: [3, 12]
       };
       const id = target.dataset.generatorSetting;
       const [min, max] = limits[id];
-      generatorConfig.settings[id] = safeNumber(target.value, generatorConfig.settings[id], min, max);
+      generatorConfig.settings[id] = id === "candidateCount"
+        ? safeNumber(target.value, generatorConfig.settings[id], min, max)
+        : safeDecimal(target.value, generatorConfig.settings[id], min, max);
       target.value = String(generatorConfig.settings[id]);
     } else if (target.dataset.generatorField) {
       const unit = units.find(item => item.id === target.dataset.generatorUnit);
@@ -3434,8 +3482,6 @@ function renderGenerator() {
     if (action === "generate-rosters") {
       const validation = generatorValidation();
       const blocked = validation.invalidRanges
-        || validation.targetConflict
-        || validation.unknownTags.size
         || !validation.activeObjectives;
       if (blocked || generateButton.dataset.running === "true") return;
       const token = ++generatorRunToken;
@@ -3482,6 +3528,8 @@ function renderGenerator() {
       matchupCache.clear();
       saveUnits();
       generatorCandidates = [];
+      activeView = "matrix";
+      localStorage.setItem(VIEW_KEY, activeView);
       renderEditor();
       renderResults();
       setUpdating(false);
@@ -3792,6 +3840,8 @@ function renderResults() {
   const matchupCount = shownUnits.length * (shownUnits.length - 1);
   const matrixMatchupCount = shownUnits.length * shownUnits.length;
   resultsPanel.classList.toggle("matrix-layout", activeView === "matrix");
+  resultsTitle.textContent = activeView === "generator" ? "Balance generator" : "Outcomes";
+  generatorButton.classList.toggle("active", activeView === "generator");
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
@@ -3858,7 +3908,7 @@ unitGrid.addEventListener("input", event => {
   if (!unit) return;
 
   if (field === "ap") unit.ap = target.checked;
-  else if (["strike", "drill", "speed", "defense", "hp"].includes(field)) unit[field] = target.value;
+  else if (["strike", "drill", "speed", "defense"].includes(field)) unit[field] = target.value;
   else unit[field] = target.value;
 
   if (field === "color") card.style.setProperty("--unit-color", target.value);
@@ -3891,13 +3941,13 @@ unitGrid.addEventListener("click", event => {
     }
   });
   matrixCustomOrder = matrixCustomOrder.filter(id => id !== removedId);
-  matrixAttackBonusIds.delete(removedId);
+  matrixAttackBonuses.delete(removedId);
   delete generatorConfig.units[removedId];
   deleteCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${removedId}`);
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
-  saveMatrixAttackBonusIds();
+  saveMatrixAttackBonuses();
   saveGeneratorConfig();
   renderEditor();
   updateResults(true);
@@ -3931,12 +3981,12 @@ resetButton.addEventListener("click", () => {
   shownUnits = cloneUnits(DEFAULT_UNITS);
   matchupOrders = {};
   matrixCustomOrder = DEFAULT_UNITS.map(unit => unit.id);
-  matrixAttackBonusIds = new Set();
+  matrixAttackBonuses = new Map();
   matchupCache.clear();
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
-  saveMatrixAttackBonusIds();
+  saveMatrixAttackBonuses();
   syncGeneratorConfigToUnits();
   renderEditor();
   renderResults();
@@ -3951,10 +4001,24 @@ viewButtons.forEach(button => {
   });
 });
 
+generatorButton.addEventListener("click", () => {
+  activeView = "generator";
+  localStorage.setItem(VIEW_KEY, activeView);
+  renderResults();
+});
+
 explodingSixesToggle.checked = explodingSixes;
 explodingSixesToggle.addEventListener("change", () => {
   explodingSixes = explodingSixesToggle.checked;
   saveExplodingSixes();
+  matchupCache.clear();
+  renderResults();
+});
+
+criticalFailToggle.checked = criticalFail;
+criticalFailToggle.addEventListener("change", () => {
+  criticalFail = criticalFailToggle.checked;
+  saveCriticalFail();
   matchupCache.clear();
   renderResults();
 });

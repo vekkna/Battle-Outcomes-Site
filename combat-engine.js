@@ -153,6 +153,74 @@ export function explodingHitDistribution(dice, chance, lethalHits, explodingSixe
   return distribution;
 }
 
+export function attackOutcomeDistribution(
+  dice,
+  chance,
+  lethalHits,
+  { explodingSixes = true, criticalFail = false } = {}
+) {
+  if (!criticalFail) {
+    return [...explodingHitDistribution(dice, chance, lethalHits, explodingSixes)]
+      .map((probability, hits) => ({ hits, criticalFails: 0, probability }))
+      .filter(outcome => outcome.probability > 0);
+  }
+
+  const pool = Math.max(1, Math.round(Number(dice) || 0));
+  const cap = Math.max(1, lethalHits);
+  const oneChance = 1 / 6;
+  const oneHits = chance > 5 / 6 ? 1 : 0;
+  const singleDie = Array.from({ length: cap + 1 }, () => new Float64Array(2));
+  const addSingle = (hits, criticalFails, probability) => {
+    if (probability > 0) singleDie[Math.min(cap, hits)][criticalFails] += probability;
+  };
+
+  if (!explodingSixes) {
+    addSingle(oneHits, 1, oneChance);
+    addSingle(0, 0, Math.max(0, 1 - chance - (oneHits ? 0 : oneChance)));
+    addSingle(1, 0, Math.max(0, chance - (oneHits ? oneChance : 0)));
+  } else {
+    const explodeChance = 1 / 6;
+    const terminalMissChance = Math.max(0, 1 - chance - (oneHits ? 0 : oneChance));
+    const terminalHitChance = Math.max(0, chance - explodeChance - (oneHits ? oneChance : 0));
+    for (let sixes = 0; sixes < cap; sixes += 1) {
+      const prefix = explodeChance ** sixes;
+      addSingle(sixes + oneHits, 1, prefix * oneChance);
+      addSingle(sixes, 0, prefix * terminalMissChance);
+      addSingle(sixes + 1, 0, prefix * terminalHitChance);
+    }
+    // Once this die has produced enough consecutive sixes to kill the target,
+    // later results cannot change the combat branch and are grouped together.
+    addSingle(cap, 0, explodeChance ** cap);
+  }
+
+  let distribution = Array.from({ length: cap + 1 }, () => new Float64Array(pool + 1));
+  distribution[0][0] = 1;
+  for (let die = 0; die < pool; die += 1) {
+    const combined = Array.from({ length: cap + 1 }, () => new Float64Array(pool + 1));
+    for (let currentHits = 0; currentHits <= cap; currentHits += 1) {
+      for (let currentFails = 0; currentFails <= die; currentFails += 1) {
+        const currentProbability = distribution[currentHits][currentFails];
+        if (!currentProbability) continue;
+        for (let addedHits = 0; addedHits <= cap; addedHits += 1) {
+          for (let addedFails = 0; addedFails <= 1; addedFails += 1) {
+            const addedProbability = singleDie[addedHits][addedFails];
+            if (!addedProbability) continue;
+            combined[Math.min(cap, currentHits + addedHits)][currentFails + addedFails]
+              += currentProbability * addedProbability;
+          }
+        }
+      }
+    }
+    distribution = combined;
+  }
+
+  const outcomes = [];
+  distribution.forEach((failures, hits) => failures.forEach((probability, criticalFails) => {
+    if (probability > 0) outcomes.push({ hits, criticalFails, probability });
+  }));
+  return outcomes;
+}
+
 function expectedAttackTurnsToKill(hitDistribution, hp) {
   const turns = new Float64Array(hp + 1);
   const successfulTurnChance = 1 - hitDistribution[0];
@@ -584,12 +652,13 @@ function finaliseRoundCombat(
  */
 export function resolveRulesMatchup(a, b, options = {}) {
   const attackBonusA = options && typeof options === "object"
-    ? clamp(Math.round(Number(options.attackBonusA) || 0), 0, 1)
+    ? clamp(Math.round(Number(options.attackBonusA) || 0), 0, 2)
     : 0;
   const attackBonusB = options && typeof options === "object"
-    ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 1)
+    ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 2)
     : 0;
   const explodingSixes = !(options && typeof options === "object" && options.explodingSixes === false);
+  const criticalFail = Boolean(options && typeof options === "object" && options.criticalFail);
   const chargeBonus = COMBAT_CHARGE_BONUS;
   const chargeProbabilityA = 0.5;
   const chargeProbabilityB = 0.5;
@@ -598,7 +667,11 @@ export function resolveRulesMatchup(a, b, options = {}) {
   const chanceA = hitChance(a, b);
   const chanceB = hitChance(b, a);
   const distributionCache = new Map();
+  const attackOutcomeCache = new Map();
+  const attackBranchCache = new Map();
+  const roundBranchCache = new Map();
   const roundCache = new Map();
+  const noDamage = new Float64Array([1]);
 
   function hitDistribution(attacker, pool, defenderHp) {
     const key = `${attacker}:${pool}:${defenderHp}`;
@@ -614,6 +687,27 @@ export function resolveRulesMatchup(a, b, options = {}) {
       );
     }
     return distributionCache.get(key);
+  }
+
+  function attackOutcomes(attacker, pool, defenderHp) {
+    const key = `${attacker}:${pool}:${defenderHp}`;
+    if (!attackOutcomeCache.has(key)) {
+      attackOutcomeCache.set(
+        key,
+        attackOutcomeDistribution(
+          pool,
+          attacker === "a" ? chanceA : chanceB,
+          defenderHp,
+          { explodingSixes, criticalFail }
+        )
+      );
+    }
+    return attackOutcomeCache.get(key);
+  }
+
+  function retaliationDistribution(defender, criticalFails, attackerHp) {
+    if (!criticalFail || criticalFails <= 0) return noDamage;
+    return hitDistribution(defender, criticalFails, attackerHp);
   }
 
   function currentRound(first, firstHits) {
@@ -634,6 +728,106 @@ export function resolveRulesMatchup(a, b, options = {}) {
     };
   }
 
+  function attackBranches(attacker, pool, hpA, hpB) {
+    const cacheKey = `${attacker}:${pool}:${hpA}:${hpB}`;
+    const cached = attackBranchCache.get(cacheKey);
+    if (cached) return cached;
+    const attackerIsA = attacker === "a";
+    const defender = attackerIsA ? "b" : "a";
+    const defenderHp = attackerIsA ? hpB : hpA;
+    const attackerHp = attackerIsA ? hpA : hpB;
+    const branchMap = new Map();
+    const addBranch = branch => {
+      const key = `${branch.winner || "-"}:${branch.hpA}:${branch.hpB}:${branch.primaryHits}`;
+      const existing = branchMap.get(key);
+      if (existing) existing.probability += branch.probability;
+      else branchMap.set(key, branch);
+    };
+
+    attackOutcomes(attacker, pool, defenderHp).forEach(outcome => {
+      if (outcome.hits >= defenderHp) {
+        addBranch({
+          winner: attacker,
+          hpA: attackerIsA ? hpA : hpA - outcome.hits,
+          hpB: attackerIsA ? hpB - outcome.hits : hpB,
+          primaryHits: outcome.hits,
+          probability: outcome.probability
+        });
+        return;
+      }
+
+      const hpAfterAttackA = attackerIsA ? hpA : hpA - outcome.hits;
+      const hpAfterAttackB = attackerIsA ? hpB - outcome.hits : hpB;
+      retaliationDistribution(defender, outcome.criticalFails, attackerHp)
+        .forEach((retaliationProbability, retaliationHits) => {
+          if (!retaliationProbability) return;
+          const remainingA = attackerIsA
+            ? hpAfterAttackA - retaliationHits
+            : hpAfterAttackA;
+          const remainingB = attackerIsA
+            ? hpAfterAttackB
+            : hpAfterAttackB - retaliationHits;
+          addBranch({
+            winner: retaliationHits >= attackerHp ? defender : null,
+            hpA: remainingA,
+            hpB: remainingB,
+            primaryHits: outcome.hits,
+            probability: outcome.probability * retaliationProbability
+          });
+        });
+    });
+    const branches = [...branchMap.values()];
+    attackBranchCache.set(cacheKey, branches);
+    return branches;
+  }
+
+  function roundBranches(first, firstPool, hpA, hpB) {
+    const cacheKey = `${first}:${firstPool}:${hpA}:${hpB}`;
+    const cached = roundBranchCache.get(cacheKey);
+    if (cached) return cached;
+    const firstIsA = first === "a";
+    const firstOnly = {
+      aActivations: firstIsA ? 1 : 0,
+      bActivations: firstIsA ? 0 : 1,
+      battleTurns: 1
+    };
+    const branchMap = new Map();
+    const addBranch = branch => {
+      const current = branch.current;
+      const key = [
+        branch.winner || "-",
+        branch.hpA,
+        branch.hpB,
+        current.aActivations,
+        current.bActivations,
+        current.battleTurns,
+        current.disruptionA || 0,
+        current.disruptionB || 0
+      ].join(":");
+      const existing = branchMap.get(key);
+      if (existing) existing.probability += branch.probability;
+      else branchMap.set(key, branch);
+    };
+    attackBranches(first, firstPool, hpA, hpB).forEach(firstBranch => {
+      if (firstBranch.winner) {
+        addBranch({ ...firstBranch, current: firstOnly });
+        return;
+      }
+
+      const { second, secondPool, current } = currentRound(first, firstBranch.primaryHits);
+      attackBranches(second, secondPool, firstBranch.hpA, firstBranch.hpB).forEach(secondBranch => {
+        addBranch({
+          ...secondBranch,
+          current,
+          probability: firstBranch.probability * secondBranch.probability
+        });
+      });
+    });
+    const branches = [...branchMap.values()];
+    roundBranchCache.set(cacheKey, branches);
+    return branches;
+  }
+
   function roundMetrics(hpA, hpB) {
     const key = `${hpA}:${hpB}`;
     const cached = roundCache.get(key);
@@ -643,60 +837,24 @@ export function resolveRulesMatchup(a, b, options = {}) {
     let selfLoopProbability = 0;
 
     ["a", "b"].forEach(first => {
-      const firstIsA = first === "a";
-      const firstPool = firstIsA ? effectiveStrikeA : effectiveStrikeB;
-      const firstTargetHp = firstIsA ? hpB : hpA;
-      hitDistribution(first, firstPool, firstTargetHp).forEach((firstProbability, firstHits) => {
-        if (!firstProbability) return;
-        const firstWins = firstHits >= firstTargetHp;
-        if (firstWins) {
-          const branch = terminalRoundMetrics(
-            first,
-            hpA,
-            hpB,
-            {
-              aActivations: firstIsA ? 1 : 0,
-              bActivations: firstIsA ? 0 : 1,
-              battleTurns: 1
-            }
+      const firstPool = first === "a" ? effectiveStrikeA : effectiveStrikeB;
+      roundBranches(first, firstPool, hpA, hpB).forEach(branch => {
+        const probability = 0.5 * branch.probability;
+        if (branch.winner) {
+          combineRoundMetrics(
+            aggregate,
+            terminalRoundMetrics(branch.winner, branch.hpA, branch.hpB, branch.current),
+            probability
           );
-          combineRoundMetrics(aggregate, branch, 0.5 * firstProbability);
-          return;
+        } else if (branch.hpA === hpA && branch.hpB === hpB) {
+          selfLoopProbability += probability;
+        } else {
+          combineRoundMetrics(
+            aggregate,
+            prependRoundMetrics(roundMetrics(branch.hpA, branch.hpB), branch.current),
+            probability
+          );
         }
-
-        const remainingAfterFirstA = firstIsA ? hpA : hpA - firstHits;
-        const remainingAfterFirstB = firstIsA ? hpB - firstHits : hpB;
-        const { second, secondPool, current } = currentRound(first, firstHits);
-        const secondTargetHp = second === "a" ? remainingAfterFirstB : remainingAfterFirstA;
-        hitDistribution(second, secondPool, secondTargetHp).forEach((secondProbability, secondHits) => {
-          if (!secondProbability) return;
-          const probability = 0.5 * firstProbability * secondProbability;
-          const secondWins = secondHits >= secondTargetHp;
-          if (secondWins) {
-            const branch = terminalRoundMetrics(
-              second,
-              second === "b" ? remainingAfterFirstA - secondHits : remainingAfterFirstA,
-              second === "a" ? remainingAfterFirstB - secondHits : remainingAfterFirstB,
-              current
-            );
-            combineRoundMetrics(aggregate, branch, probability);
-            return;
-          }
-
-          if (firstHits === 0 && secondHits === 0) {
-            selfLoopProbability += probability;
-            return;
-          }
-
-          const remainingA = second === "b"
-            ? remainingAfterFirstA - secondHits
-            : remainingAfterFirstA;
-          const remainingB = second === "a"
-            ? remainingAfterFirstB - secondHits
-            : remainingAfterFirstB;
-          const branch = prependRoundMetrics(roundMetrics(remainingA, remainingB), current);
-          combineRoundMetrics(aggregate, branch, probability);
-        });
       });
     });
 
@@ -724,59 +882,12 @@ export function resolveRulesMatchup(a, b, options = {}) {
   function openingMetrics(charger, chargeBonus) {
     const chargerIsA = charger === "a";
     const chargerPool = (chargerIsA ? effectiveStrikeA : effectiveStrikeB) + chargeBonus;
-    const targetHp = chargerIsA ? b.hp : a.hp;
     const result = emptyRoundMetrics();
-
-    hitDistribution(charger, chargerPool, targetHp).forEach((firstProbability, firstHits) => {
-      if (!firstProbability) return;
-      if (firstHits >= targetHp) {
-        combineRoundMetrics(
-          result,
-          terminalRoundMetrics(
-            charger,
-            a.hp,
-            b.hp,
-            {
-              aActivations: chargerIsA ? 1 : 0,
-              bActivations: chargerIsA ? 0 : 1,
-              battleTurns: 1
-            }
-          ),
-          firstProbability
-        );
-        return;
-      }
-
-      const remainingAfterFirstA = chargerIsA ? a.hp : a.hp - firstHits;
-      const remainingAfterFirstB = chargerIsA ? b.hp - firstHits : b.hp;
-      const { second, secondPool, current } = currentRound(charger, firstHits);
-      const secondTargetHp = second === "a" ? remainingAfterFirstB : remainingAfterFirstA;
-      hitDistribution(second, secondPool, secondTargetHp).forEach((secondProbability, secondHits) => {
-        if (!secondProbability) return;
-        const probability = firstProbability * secondProbability;
-        if (secondHits >= secondTargetHp) {
-          combineRoundMetrics(
-            result,
-            terminalRoundMetrics(
-              second,
-              second === "b" ? remainingAfterFirstA - secondHits : remainingAfterFirstA,
-              second === "a" ? remainingAfterFirstB - secondHits : remainingAfterFirstB,
-              current
-            ),
-            probability
-          );
-          return;
-        }
-
-        const remainingA = second === "b"
-          ? remainingAfterFirstA - secondHits
-          : remainingAfterFirstA;
-        const remainingB = second === "a"
-          ? remainingAfterFirstB - secondHits
-          : remainingAfterFirstB;
-        const branch = prependRoundMetrics(roundMetrics(remainingA, remainingB), current);
-        combineRoundMetrics(result, branch, probability);
-      });
+    roundBranches(charger, chargerPool, a.hp, b.hp).forEach(branch => {
+      const metrics = branch.winner
+        ? terminalRoundMetrics(branch.winner, branch.hpA, branch.hpB, branch.current)
+        : prependRoundMetrics(roundMetrics(branch.hpA, branch.hpB), branch.current);
+      combineRoundMetrics(result, metrics, branch.probability);
     });
     return result;
   }
@@ -793,6 +904,7 @@ export function resolveRulesMatchup(a, b, options = {}) {
   return finaliseRoundCombat(a, b, overall, effectiveStrikeA, effectiveStrikeB, explodingSixes, {
     attackBonusA,
     attackBonusB,
+    criticalFail,
     chargeBonus,
     chargeProbabilityA,
     chargeProbabilityB,
