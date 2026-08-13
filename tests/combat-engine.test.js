@@ -250,6 +250,23 @@ test("AP and chained exploding-six behavior remain exact", () => {
   assert.ok(Math.abs(twoOrMore - 1 / 9) < 1e-12);
 });
 
+test("exploding sixes can be disabled without changing the target number", () => {
+  const distribution = explodingHitDistribution(2, 0.5, 3, false);
+  assert.ok(Math.abs(distribution[0] - 0.25) < 1e-12);
+  assert.ok(Math.abs(distribution[1] - 0.5) < 1e-12);
+  assert.ok(Math.abs(distribution[2] - 0.25) < 1e-12);
+  assert.equal(distribution[3], 0);
+
+  const a = unit({ name: "A", strike: 3, defense: 6 });
+  const b = unit({ name: "B", strike: 5, defense: 3 });
+  const enabled = resolveRulesMatchup(a, b);
+  const disabled = resolveRulesMatchup(a, b, { explodingSixes: false });
+  assert.equal(enabled.explodingSixes, true);
+  assert.equal(disabled.explodingSixes, false);
+  assert.ok(Math.abs(disabled.expectedHitsA - disabled.effectiveStrikeA * disabled.hitChanceA) < 1e-12);
+  assert.notEqual(disabled.shareA, enabled.shareA);
+});
+
 test("every matchup mode returns a finite probability within 0–100", () => {
   const settings = normaliseBattlefieldSettings(DEFAULT_BATTLEFIELD_SETTINGS);
   for (const a of sourceRoster) {

@@ -116,7 +116,7 @@ export function hitChance(attacker, defender) {
   return (7 - defender.defense) / 6;
 }
 
-export function explodingHitDistribution(dice, chance, lethalHits) {
+export function explodingHitDistribution(dice, chance, lethalHits, explodingSixes = true) {
   const pool = Math.max(1, Math.round(Number(dice) || 0));
   const cap = Math.max(1, lethalHits);
   const explodeChance = 1 / 6;
@@ -125,13 +125,17 @@ export function explodingHitDistribution(dice, chance, lethalHits) {
   const singleDie = new Float64Array(cap + 1);
   singleDie[0] = missChance;
 
-  let representedChance = missChance;
-  for (let hits = 1; hits < cap; hits += 1) {
-    singleDie[hits] = explodeChance ** (hits - 1)
-      * (nonExplodingHitChance + explodeChance * missChance);
-    representedChance += singleDie[hits];
+  if (!explodingSixes) {
+    singleDie[Math.min(1, cap)] += chance;
+  } else {
+    let representedChance = missChance;
+    for (let hits = 1; hits < cap; hits += 1) {
+      singleDie[hits] = explodeChance ** (hits - 1)
+        * (nonExplodingHitChance + explodeChance * missChance);
+      representedChance += singleDie[hits];
+    }
+    singleDie[cap] = Math.max(0, 1 - representedChance);
   }
-  singleDie[cap] = Math.max(0, 1 - representedChance);
 
   let distribution = new Float64Array(cap + 1);
   distribution[0] = 1;
@@ -507,13 +511,22 @@ function prependRoundMetrics(downstream, current) {
   return result;
 }
 
-function finaliseRoundCombat(a, b, metrics, effectiveStrikeA, effectiveStrikeB, extras = {}) {
+function finaliseRoundCombat(
+  a,
+  b,
+  metrics,
+  effectiveStrikeA,
+  effectiveStrikeB,
+  explodingSixes,
+  extras = {}
+) {
   const chanceAOverall = clamp(metrics.chanceA, 0, 1);
   const chanceBOverall = 1 - chanceAOverall;
   const chanceA = hitChance(a, b);
   const chanceB = hitChance(b, a);
-  const hitsA = explodingHitDistribution(effectiveStrikeA, chanceA, b.hp);
-  const hitsB = explodingHitDistribution(effectiveStrikeB, chanceB, a.hp);
+  const hitsA = explodingHitDistribution(effectiveStrikeA, chanceA, b.hp, explodingSixes);
+  const hitsB = explodingHitDistribution(effectiveStrikeB, chanceB, a.hp, explodingSixes);
+  const explosionMultiplier = explodingSixes ? 1 / (1 - 1 / 6) : 1;
   const shareA = chanceAOverall * 100;
   return {
     a,
@@ -531,10 +544,11 @@ function finaliseRoundCombat(a, b, metrics, effectiveStrikeA, effectiveStrikeB, 
     speedAttacker: null,
     hitChanceA: chanceA,
     hitChanceB: chanceB,
-    expectedHitsA: effectiveStrikeA * chanceA / (1 - 1 / 6),
-    expectedHitsB: effectiveStrikeB * chanceB / (1 - 1 / 6),
-    expectedChargeHitsA: (effectiveStrikeA + COMBAT_CHARGE_BONUS) * chanceA / (1 - 1 / 6),
-    expectedChargeHitsB: (effectiveStrikeB + COMBAT_CHARGE_BONUS) * chanceB / (1 - 1 / 6),
+    explodingSixes,
+    expectedHitsA: effectiveStrikeA * chanceA * explosionMultiplier,
+    expectedHitsB: effectiveStrikeB * chanceB * explosionMultiplier,
+    expectedChargeHitsA: (effectiveStrikeA + COMBAT_CHARGE_BONUS) * chanceA * explosionMultiplier,
+    expectedChargeHitsB: (effectiveStrikeB + COMBAT_CHARGE_BONUS) * chanceB * explosionMultiplier,
     shareA,
     victoryTurnsA: chanceAOverall > Number.EPSILON
       ? metrics.weightedTurnsA / chanceAOverall
@@ -575,6 +589,7 @@ export function resolveRulesMatchup(a, b, options = {}) {
   const attackBonusB = options && typeof options === "object"
     ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 1)
     : 0;
+  const explodingSixes = !(options && typeof options === "object" && options.explodingSixes === false);
   const chargeBonus = COMBAT_CHARGE_BONUS;
   const chargeProbabilityA = 0.5;
   const chargeProbabilityB = 0.5;
@@ -590,7 +605,12 @@ export function resolveRulesMatchup(a, b, options = {}) {
     if (!distributionCache.has(key)) {
       distributionCache.set(
         key,
-        explodingHitDistribution(pool, attacker === "a" ? chanceA : chanceB, defenderHp)
+        explodingHitDistribution(
+          pool,
+          attacker === "a" ? chanceA : chanceB,
+          defenderHp,
+          explodingSixes
+        )
       );
     }
     return distributionCache.get(key);
@@ -770,7 +790,7 @@ export function resolveRulesMatchup(a, b, options = {}) {
   combineRoundMetrics(overall, aCharges, chargeProbabilityA);
   combineRoundMetrics(overall, bCharges, chargeProbabilityB);
 
-  return finaliseRoundCombat(a, b, overall, effectiveStrikeA, effectiveStrikeB, {
+  return finaliseRoundCombat(a, b, overall, effectiveStrikeA, effectiveStrikeB, explodingSixes, {
     attackBonusA,
     attackBonusB,
     chargeBonus,

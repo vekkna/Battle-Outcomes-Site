@@ -443,7 +443,8 @@ h2 {
 }
 
 .drill-rule-control,
-.speed-rule-control {
+.speed-rule-control,
+.exploding-rule-control {
   height: 28px;
   display: inline-flex;
   align-items: center;
@@ -461,14 +462,16 @@ h2 {
 }
 
 .drill-rule-control input,
-.speed-rule-control input {
+.speed-rule-control input,
+.exploding-rule-control input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
 
 .drill-rule-toggle,
-.speed-rule-toggle {
+.speed-rule-toggle,
+.exploding-rule-toggle {
   position: relative;
   width: 22px;
   height: 13px;
@@ -478,7 +481,8 @@ h2 {
 }
 
 .drill-rule-toggle::after,
-.speed-rule-toggle::after {
+.speed-rule-toggle::after,
+.exploding-rule-toggle::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -499,8 +503,13 @@ h2 {
   background: #477c92;
 }
 
+.exploding-rule-control input:checked + .exploding-rule-toggle {
+  background: #a66b27;
+}
+
 .drill-rule-control input:checked + .drill-rule-toggle::after,
-.speed-rule-control input:checked + .speed-rule-toggle::after {
+.speed-rule-control input:checked + .speed-rule-toggle::after,
+.exploding-rule-control input:checked + .exploding-rule-toggle::after {
   transform: translateX(9px);
 }
 

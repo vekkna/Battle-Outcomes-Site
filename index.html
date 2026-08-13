@@ -48,9 +48,14 @@
             <h1 id="rosterTitle">Units</h1>
             <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
-          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+. Every natural 6 scores a hit and adds another die, which can also explode.">
-            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+ <i></i> 6s explode
+          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+.">
+            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+
           </div>
+          <label class="exploding-rule-control" title="When enabled, every natural 6 scores its hit and rolls another die against the same target number. Additional dice can also explode.">
+            <input id="explodingSixesToggle" type="checkbox" checked>
+            <span class="exploding-rule-toggle" aria-hidden="true"></span>
+            <span>Exploding 6s</span>
+          </label>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
           </button>

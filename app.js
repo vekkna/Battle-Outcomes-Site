@@ -19,6 +19,7 @@ const MATRIX_SCENARIO_KEY = "matchup-board-matrix-scenario-v1";
 const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
 const MATRIX_MODE_KEY = "matchup-board-matrix-mode-v1";
 const MATRIX_ATTACK_BONUS_KEY = "matchup-board-matrix-attack-bonus-v1";
+const EXPLODING_SIXES_KEY = "matchup-board-exploding-sixes-v1";
 const BATTLEFIELD_SETTINGS_KEY = "matchup-board-battlefield-settings-v1";
 const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const UNIT_SETS_KEY = "matchup-board-unit-sets-v1";
@@ -92,6 +93,7 @@ const resultStage = document.querySelector("#resultStage");
 const resultsPanel = document.querySelector(".results-panel");
 const resultsMeta = document.querySelector("#resultsMeta");
 const outcomeKey = document.querySelector(".outcome-key");
+const explodingSixesToggle = document.querySelector("#explodingSixesToggle");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
 const viewButtons = [...document.querySelectorAll(".view-button")];
 
@@ -104,6 +106,7 @@ let matrixScenario = loadMatrixScenario();
 let matrixCustomOrder = loadMatrixCustomOrder();
 let matrixMode = "combat";
 let matrixAttackBonusIds = loadMatrixAttackBonusIds();
+let explodingSixes = loadExplodingSixes();
 let battlefieldSettings = loadBattlefieldSettings();
 let counterThreshold = loadCounterThreshold();
 let similarityMetric = loadSimilarityMetric();
@@ -461,6 +464,25 @@ function saveSimilarityMetric() {
     // The selected metric still works for the current session.
   }
   writeCookieValue(SIMILARITY_METRIC_KEY, similarityMetric);
+}
+
+function loadExplodingSixes() {
+  try {
+    const saved = readCookieValue(EXPLODING_SIXES_KEY) ?? localStorage.getItem(EXPLODING_SIXES_KEY);
+    return saved === null ? true : saved !== "false";
+  } catch (_) {
+    return true;
+  }
+}
+
+function saveExplodingSixes() {
+  const saved = String(explodingSixes);
+  try {
+    localStorage.setItem(EXPLODING_SIXES_KEY, saved);
+  } catch (_) {
+    // The selected rule still works for the current session.
+  }
+  writeCookieValue(EXPLODING_SIXES_KEY, saved);
 }
 
 function loadMatrixSort() {
@@ -1249,7 +1271,7 @@ function matchupKey(
   ].join(":");
   const settingsPart = mode === "battlefield"
     ? battlefieldSettingsKey(battlefieldSettings)
-    : "charge-disruption-v4";
+    : `charge-disruption-v5:exploding-${explodingSixes ? "on" : "off"}`;
   const effectiveModifier = mode === "battlefield" ? combatModifier : 0;
   const bonusPart = mode === "combat" ? `${attackBonusA}:${attackBonusB}` : "0:0";
   return `${mode}:${settingsPart}:${effectiveModifier}:${bonusPart}|${unitKey(a)}|${unitKey(b)}`;
@@ -1328,7 +1350,7 @@ function getMatchup(
   }
   const matchup = mode === "battlefield"
     ? resolveBattlefieldMatchup(a, b, combatModifier, battlefieldSettings)
-    : resolveRulesMatchup(a, b, { attackBonusA, attackBonusB });
+    : resolveRulesMatchup(a, b, { attackBonusA, attackBonusB, explodingSixes });
   matchupCache.set(key, matchup);
   return matchup;
 }
@@ -1368,7 +1390,10 @@ function matchupInitiativeText(matchup) {
   if (matchup.mode === "battlefield") {
     return "Battlefield estimate weights neutral, frontal-charge and flank-charge openings; Speed affects charge control and Drill affects flank conversion.";
   }
-  return "Both possible chargers are weighted equally. Charging adds no dice: its advantage is striking first and disrupting the reply. In later rounds either unit is equally likely to strike first. Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die.";
+  const sixes = matchup.explodingSixes
+    ? "Every natural 6 scores a hit and rolls another die against the same target number; additional 6s repeat the process."
+    : "Natural 6s do not generate additional dice.";
+  return `Both possible chargers are weighted equally. Charging adds no dice: its advantage is striking first and disrupting the reply. In later rounds either unit is equally likely to strike first. Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die. ${sixes}`;
 }
 
 function matchupTitle(matchup) {
@@ -1378,7 +1403,8 @@ function matchupTitle(matchup) {
   const chargeText = matchup.mode === "combat"
     ? ` Opening outcomes: ${matchup.a.name} charging ${Math.round(matchup.chanceAWhenACharges * 100)}%; ${matchup.b.name} charging ${Math.round(matchup.chanceAWhenBCharges * 100)}% for ${matchup.a.name}.`
     : "";
-  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${positionalText}${chargeText} ${matchup.a.name}: ${matchupStrikeText(matchup.a, matchup.effectiveStrikeA, matchup.drillAdjustmentA, matchup.combatAdjustmentA, matchup.attackBonusA)} hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchupStrikeText(matchup.b, matchup.effectiveStrikeB, matchup.drillAdjustmentB, matchup.combatAdjustmentB, matchup.attackBonusB)} hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack with exploding 6s and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. ${matchupInitiativeText(matchup)}`;
+  const hitRule = matchup.explodingSixes ? " with exploding 6s" : "";
+  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${positionalText}${chargeText} ${matchup.a.name}: ${matchupStrikeText(matchup.a, matchup.effectiveStrikeA, matchup.drillAdjustmentA, matchup.combatAdjustmentA, matchup.attackBonusA)} hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack${hitRule} and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchupStrikeText(matchup.b, matchup.effectiveStrikeB, matchup.drillAdjustmentB, matchup.combatAdjustmentB, matchup.attackBonusB)} hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack${hitRule} and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. ${matchupInitiativeText(matchup)}`;
 }
 
 function comparisonsFor(unit) {
@@ -3923,6 +3949,14 @@ viewButtons.forEach(button => {
     localStorage.setItem(VIEW_KEY, activeView);
     renderResults();
   });
+});
+
+explodingSixesToggle.checked = explodingSixes;
+explodingSixesToggle.addEventListener("change", () => {
+  explodingSixes = explodingSixesToggle.checked;
+  saveExplodingSixes();
+  matchupCache.clear();
+  renderResults();
 });
 
 makeSortable(unitGrid, ".unit-card", "id");
