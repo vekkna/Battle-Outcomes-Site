@@ -1,0 +1,5 @@
+# Installed npm dependencies (recreated from package-lock.json)
+node_modules/
+
+# ESLint's optional on-disk cache
+.eslintcache
