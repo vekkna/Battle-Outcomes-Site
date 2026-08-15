@@ -1,12 +1,8 @@
 import {
-  DEFAULT_BATTLEFIELD_SETTINGS,
-  accessibleChargeBands,
   battlefieldSettingsKey,
-  drillConversionChance,
   normaliseBattlefieldSettings,
   resolveBattlefieldMatchup,
-  resolveRulesMatchup,
-  speedInitiativeShare
+  resolveRulesMatchup
 } from "./combat-engine.js";
 import { generatorRosterMetrics as calculateGeneratorMetrics } from "./generator-engine.js";
 
@@ -18,7 +14,6 @@ const MATCHUP_ORDER_KEY = "matchup-board-matchup-orders-v1";
 const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
 const MATRIX_SCENARIO_KEY = "matchup-board-matrix-scenario-v1";
 const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
-const MATRIX_MODE_KEY = "matchup-board-matrix-mode-v1";
 const MATRIX_ATTACK_BONUS_KEY = "matchup-board-matrix-attack-bonus-v1";
 const EXPLODING_SIXES_KEY = "matchup-board-exploding-sixes-v1";
 const CRITICAL_FAIL_KEY = "matchup-board-critical-fail-v1";
@@ -173,7 +168,7 @@ function readCookieValue(name) {
     const prefix = `${name}=`;
     const stored = document.cookie.split("; ").find(item => item.startsWith(prefix));
     return stored ? decodeURIComponent(stored.slice(prefix.length)) : null;
-  } catch (_) {
+  } catch {
     return null;
   }
 }
@@ -184,7 +179,7 @@ function writeCookieValue(name, value) {
     if (encoded.length <= 3800) {
       document.cookie = `${name}=${encoded}; Max-Age=157680000; Path=/; SameSite=Lax`;
     }
-  } catch (_) {
+  } catch {
     // Cookies may be unavailable for file URLs; origin-local storage still works there.
   }
 }
@@ -193,7 +188,7 @@ function loadCookieUnits() {
   try {
     const saved = JSON.parse(readCookieValue(STORAGE_COOKIE));
     return validSavedUnits(saved) ? saved : null;
-  } catch (_) {
+  } catch {
     return null;
   }
 }
@@ -201,7 +196,7 @@ function loadCookieUnits() {
 function deleteCookieValue(name) {
   try {
     document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
-  } catch (_) {
+  } catch {
     // Cookies may be unavailable for file URLs.
   }
 }
@@ -261,7 +256,7 @@ function loadUnitSets() {
     if (Array.isArray(saved)) {
       localSets = saved.map(normaliseUnitSet).filter(Boolean);
     }
-  } catch (_) {
+  } catch {
     // Try the cross-port cookie copies below.
   }
 
@@ -275,13 +270,13 @@ function loadUnitSets() {
         try {
           const packedUnits = JSON.parse(readCookieValue(`${UNIT_SET_COOKIE_PREFIX}${id}`));
           cookieSet = normaliseUnitSet({ ...entry, id, units: packedUnits }, position);
-        } catch (_) {
+        } catch {
           // Fall back to the origin-local copy if this individual cookie is unavailable.
         }
         return cookieSet || localById.get(id) || null;
       }).filter(Boolean);
     }
-  } catch (_) {
+  } catch {
     // Fall back to origin-local saved sets.
   }
 
@@ -296,7 +291,7 @@ function saveUnitSets() {
   }));
   try {
     localStorage.setItem(UNIT_SETS_KEY, JSON.stringify(localValue));
-  } catch (_) {
+  } catch {
     // Cookie copies can still preserve the sets for localhost previews.
   }
 
@@ -380,7 +375,7 @@ function loadGeneratorConfig() {
   let local = null;
   try {
     local = JSON.parse(localStorage.getItem(GENERATOR_CONFIG_KEY));
-  } catch (_) {
+  } catch {
     // Try the cross-port cookie copies below.
   }
 
@@ -393,13 +388,13 @@ function loadGeneratorConfig() {
         try {
           const savedUnit = JSON.parse(readCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${id}`));
           if (savedUnit) cookieUnits[id] = savedUnit;
-        } catch (_) {
+        } catch {
           if (local?.units?.[id]) cookieUnits[id] = local.units[id];
         }
       });
       return normaliseGeneratorConfig({ ...header, units: { ...(local?.units || {}), ...cookieUnits } });
     }
-  } catch (_) {
+  } catch {
     // Fall back to origin-local configuration.
   }
   return normaliseGeneratorConfig(local);
@@ -408,7 +403,7 @@ function loadGeneratorConfig() {
 function saveGeneratorConfig() {
   try {
     localStorage.setItem(GENERATOR_CONFIG_KEY, JSON.stringify(generatorConfig));
-  } catch (_) {
+  } catch {
     // Cross-port cookie copies may still be available.
   }
   const header = {
@@ -458,7 +453,7 @@ function loadUnits() {
     }
 
     if (validSavedUnits(saved)) return sanitiseUnits(saved);
-  } catch (_) {
+  } catch {
     // Use the examples when stored data is unavailable or malformed.
   }
   return cloneUnits(DEFAULT_UNITS);
@@ -473,7 +468,7 @@ function loadSimilarityMetric() {
   try {
     const saved = readCookieValue(SIMILARITY_METRIC_KEY) ?? localStorage.getItem(SIMILARITY_METRIC_KEY);
     return ["overall", "specialization"].includes(saved) ? saved : "overall";
-  } catch (_) {
+  } catch {
     return "overall";
   }
 }
@@ -481,7 +476,7 @@ function loadSimilarityMetric() {
 function saveSimilarityMetric() {
   try {
     localStorage.setItem(SIMILARITY_METRIC_KEY, similarityMetric);
-  } catch (_) {
+  } catch {
     // The selected metric still works for the current session.
   }
   writeCookieValue(SIMILARITY_METRIC_KEY, similarityMetric);
@@ -491,7 +486,7 @@ function loadExplodingSixes() {
   try {
     const saved = readCookieValue(EXPLODING_SIXES_KEY) ?? localStorage.getItem(EXPLODING_SIXES_KEY);
     return saved === null ? true : saved !== "false";
-  } catch (_) {
+  } catch {
     return true;
   }
 }
@@ -500,7 +495,7 @@ function saveExplodingSixes() {
   const saved = String(explodingSixes);
   try {
     localStorage.setItem(EXPLODING_SIXES_KEY, saved);
-  } catch (_) {
+  } catch {
     // The selected rule still works for the current session.
   }
   writeCookieValue(EXPLODING_SIXES_KEY, saved);
@@ -510,7 +505,7 @@ function loadCriticalFail() {
   try {
     const saved = readCookieValue(CRITICAL_FAIL_KEY) ?? localStorage.getItem(CRITICAL_FAIL_KEY);
     return saved === "true";
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -519,7 +514,7 @@ function saveCriticalFail() {
   const saved = String(criticalFail);
   try {
     localStorage.setItem(CRITICAL_FAIL_KEY, saved);
-  } catch (_) {
+  } catch {
     // The selected rule still works for the current session.
   }
   writeCookieValue(CRITICAL_FAIL_KEY, saved);
@@ -533,7 +528,7 @@ function loadMatrixSort() {
 function saveMatrixSort() {
   try {
     localStorage.setItem(MATRIX_SORT_KEY, matrixSort);
-  } catch (_) {
+  } catch {
     // The selected order still works for the current session.
   }
   writeCookieValue(MATRIX_SORT_KEY, matrixSort);
@@ -543,25 +538,16 @@ function loadMatrixScenario() {
   try {
     const saved = readCookieValue(MATRIX_SCENARIO_KEY) ?? localStorage.getItem(MATRIX_SCENARIO_KEY);
     return ["compare", ...COMBAT_SCENARIOS.map(scenario => scenario.id)].includes(saved) ? saved : "compare";
-  } catch (_) {
+  } catch {
     return "compare";
   }
-}
-
-function saveMatrixScenario() {
-  try {
-    localStorage.setItem(MATRIX_SCENARIO_KEY, matrixScenario);
-  } catch (_) {
-    // The selected scenario still works for the current session.
-  }
-  writeCookieValue(MATRIX_SCENARIO_KEY, matrixScenario);
 }
 
 function loadMatrixCustomOrder() {
   try {
     const saved = JSON.parse(readCookieValue(MATRIX_CUSTOM_ORDER_KEY) || localStorage.getItem(MATRIX_CUSTOM_ORDER_KEY));
     return Array.isArray(saved) ? saved.map(String) : [];
-  } catch (_) {
+  } catch {
     return [];
   }
 }
@@ -570,7 +556,7 @@ function saveMatrixCustomOrder() {
   const value = JSON.stringify(matrixCustomOrder);
   try {
     localStorage.setItem(MATRIX_CUSTOM_ORDER_KEY, value);
-  } catch (_) {
+  } catch {
     // Custom ordering still works for the current session.
   }
   writeCookieValue(MATRIX_CUSTOM_ORDER_KEY, value);
@@ -590,7 +576,7 @@ function loadMatrixAttackBonuses() {
       String(id),
       Math.min(2, Math.max(0, Math.round(Number(value) || 0)))
     ]).filter(([, value]) => value > 0));
-  } catch (_) {
+  } catch {
     return new Map();
   }
 }
@@ -599,7 +585,7 @@ function saveMatrixAttackBonuses() {
   const value = JSON.stringify(Object.fromEntries(matrixAttackBonuses));
   try {
     localStorage.setItem(MATRIX_ATTACK_BONUS_KEY, value);
-  } catch (_) {
+  } catch {
     // Attack bonuses still work for the current session.
   }
   writeCookieValue(MATRIX_ATTACK_BONUS_KEY, value);
@@ -618,24 +604,6 @@ function loadCounterThreshold() {
   return [60, 65, 70, 75, 80].includes(saved) ? saved : 80;
 }
 
-function loadMatrixMode() {
-  try {
-    const saved = readCookieValue(MATRIX_MODE_KEY) ?? localStorage.getItem(MATRIX_MODE_KEY);
-    return saved === "battlefield" ? "battlefield" : "combat";
-  } catch (_) {
-    return "combat";
-  }
-}
-
-function saveMatrixMode() {
-  try {
-    localStorage.setItem(MATRIX_MODE_KEY, matrixMode);
-  } catch (_) {
-    // The selected mode still works for the current session.
-  }
-  writeCookieValue(MATRIX_MODE_KEY, matrixMode);
-}
-
 function loadBattlefieldSettings() {
   let saved = null;
   try {
@@ -644,27 +612,17 @@ function loadBattlefieldSettings() {
       ?? localStorage.getItem(BATTLEFIELD_SETTINGS_KEY)
       ?? "null"
     );
-  } catch (_) {
+  } catch {
     // Use the provisional defaults when stored settings are unavailable.
   }
   return normaliseBattlefieldSettings(saved);
-}
-
-function saveBattlefieldSettings() {
-  const value = JSON.stringify(battlefieldSettings);
-  try {
-    localStorage.setItem(BATTLEFIELD_SETTINGS_KEY, value);
-  } catch (_) {
-    // Cookie persistence may still be available.
-  }
-  writeCookieValue(BATTLEFIELD_SETTINGS_KEY, value);
 }
 
 function saveUnits() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(units));
     localStorage.setItem(RECOVERY_KEY, "1");
-  } catch (_) {
+  } catch {
     // The app remains fully usable when local storage is blocked.
   }
 
@@ -675,7 +633,7 @@ function loadMatchupOrders() {
   try {
     const saved = JSON.parse(localStorage.getItem(MATCHUP_ORDER_KEY));
     if (saved && typeof saved === "object" && !Array.isArray(saved)) return saved;
-  } catch (_) {
+  } catch {
     // Fall back to the unit order when custom matchup ordering is unavailable.
   }
   return {};
@@ -684,7 +642,7 @@ function loadMatchupOrders() {
 function saveMatchupOrders() {
   try {
     localStorage.setItem(MATCHUP_ORDER_KEY, JSON.stringify(matchupOrders));
-  } catch (_) {
+  } catch {
     // Reordering still works for the current session when storage is blocked.
   }
 }
@@ -927,373 +885,6 @@ function enableMatchupRowSorting() {
     const row = event.target.closest(".matchup-row");
     if (row && !row.classList.contains("dragging")) row.removeAttribute("draggable");
   });
-}
-
-function hitChance(attacker, defender) {
-  if (attacker.ap) return 4 / 6;
-  return (7 - defender.defense) / 6;
-}
-
-function explodingHitDistribution(dice, chance, lethalHits) {
-  const cap = Math.max(1, lethalHits);
-  const explodeChance = 1 / 6;
-  const missChance = 1 - chance;
-  const nonExplodingHitChance = chance - explodeChance;
-  const singleDie = new Float64Array(cap + 1);
-  singleDie[0] = missChance;
-
-  let representedChance = missChance;
-  for (let hits = 1; hits < cap; hits += 1) {
-    singleDie[hits] = explodeChance ** (hits - 1)
-      * (nonExplodingHitChance + explodeChance * missChance);
-    representedChance += singleDie[hits];
-  }
-  singleDie[cap] = Math.max(0, 1 - representedChance);
-
-  let distribution = new Float64Array(cap + 1);
-  distribution[0] = 1;
-  for (let die = 0; die < dice; die += 1) {
-    const combined = new Float64Array(cap + 1);
-    for (let currentHits = 0; currentHits <= cap; currentHits += 1) {
-      if (distribution[currentHits] === 0) continue;
-      for (let addedHits = 0; addedHits <= cap; addedHits += 1) {
-        const totalHits = Math.min(cap, currentHits + addedHits);
-        combined[totalHits] += distribution[currentHits] * singleDie[addedHits];
-      }
-    }
-    distribution = combined;
-  }
-
-  return distribution;
-}
-
-function expectedAttackTurnsToKill(hitDistribution, hp) {
-  const turns = new Float64Array(hp + 1);
-  const successfulTurnChance = 1 - hitDistribution[0];
-
-  for (let remainingHp = 1; remainingHp <= hp; remainingHp += 1) {
-    let futureTurns = 0;
-    for (let hits = 1; hits < hitDistribution.length && hits < remainingHp; hits += 1) {
-      futureTurns += hitDistribution[hits] * turns[remainingHp - hits];
-    }
-    turns[remainingHp] = (1 + futureTurns) / successfulTurnChance;
-  }
-
-  return turns[hp];
-}
-
-function effectiveStrikes(a, b, combatModifier = 0) {
-  const drillAdjustmentA = 0;
-  const drillAdjustmentB = 0;
-  const combatAdjustmentA = combatModifier;
-  const combatAdjustmentB = -combatModifier;
-  const adjustmentA = drillAdjustmentA + combatAdjustmentA;
-  const adjustmentB = drillAdjustmentB + combatAdjustmentB;
-  return {
-    strikeA: Math.max(1, a.strike + adjustmentA),
-    strikeB: Math.max(1, b.strike + adjustmentB),
-    adjustmentA,
-    adjustmentB,
-    drillAdjustmentA,
-    drillAdjustmentB,
-    combatAdjustmentA,
-    combatAdjustmentB
-  };
-}
-
-function speedAttackerFor(a, b) {
-  return null;
-}
-
-function legacyMatchupKey(a, b, combatModifier = 0) {
-  const unitKey = unit => [unit.id, unit.strike, unit.drill, unit.speed, unit.ap ? 1 : 0, unit.defense, unit.hp].join(":");
-  return `rules-only:${combatModifier}|${unitKey(a)}|${unitKey(b)}`;
-}
-
-function getLegacyMatchup(a, b, combatModifier = 0) {
-  const key = legacyMatchupKey(a, b, combatModifier);
-  const cached = matchupCache.get(key);
-  if (cached) return cached;
-
-  const chanceA = hitChance(a, b);
-  const chanceB = hitChance(b, a);
-  const {
-    strikeA,
-    strikeB,
-    adjustmentA,
-    adjustmentB,
-    drillAdjustmentA,
-    drillAdjustmentB,
-    combatAdjustmentA,
-    combatAdjustmentB
-  } = effectiveStrikes(a, b, combatModifier);
-  const hitsA = explodingHitDistribution(strikeA, chanceA, b.hp);
-  const hitsB = explodingHitDistribution(strikeB, chanceB, a.hp);
-  const makeTable = () => Array.from({ length: a.hp + 1 }, () => new Float64Array(b.hp + 1));
-  const aFirst = makeTable();
-  const bFirst = makeTable();
-  const aVictoryTurnsFromA = makeTable();
-  const aVictoryTurnsFromB = makeTable();
-  const aVictoryHpFromA = makeTable();
-  const aVictoryHpFromB = makeTable();
-  const bVictoryTurnsFromA = makeTable();
-  const bVictoryTurnsFromB = makeTable();
-  const bVictoryHpFromA = makeTable();
-  const bVictoryHpFromB = makeTable();
-  const battleTurnsFromA = makeTable();
-  const battleTurnsFromB = makeTable();
-  const aActivationsFromA = makeTable();
-  const aActivationsFromB = makeTable();
-  const bActivationsFromA = makeTable();
-  const bActivationsFromB = makeTable();
-
-  for (let hpA = 1; hpA <= a.hp; hpA += 1) {
-    for (let hpB = 1; hpB <= b.hp; hpB += 1) {
-      let aPositiveResult = 0;
-      let aTurnsAfterAHit = 0;
-      let aHpAfterAHit = 0;
-      let bTurnsAfterAHit = 0;
-      let bHpAfterAHit = 0;
-      let battleTurnsAfterAHit = 0;
-      let aActivationsAfterAHit = 0;
-      let bActivationsAfterAHit = 0;
-      for (let hits = 1; hits < hitsA.length; hits += 1) {
-        const probability = hitsA[hits];
-        if (hits >= hpB) {
-          aPositiveResult += probability;
-          aHpAfterAHit += probability * hpA;
-        } else {
-          const remainingB = hpB - hits;
-          aPositiveResult += probability * bFirst[hpA][remainingB];
-          aTurnsAfterAHit += probability * aVictoryTurnsFromB[hpA][remainingB];
-          aHpAfterAHit += probability * aVictoryHpFromB[hpA][remainingB];
-          bTurnsAfterAHit += probability * bVictoryTurnsFromB[hpA][remainingB];
-          bHpAfterAHit += probability * bVictoryHpFromB[hpA][remainingB];
-          battleTurnsAfterAHit += probability * battleTurnsFromB[hpA][remainingB];
-          aActivationsAfterAHit += probability * aActivationsFromB[hpA][remainingB];
-          bActivationsAfterAHit += probability * bActivationsFromB[hpA][remainingB];
-        }
-      }
-
-      let bPositiveResult = 0;
-      let aTurnsAfterBHit = 0;
-      let aHpAfterBHit = 0;
-      let bTurnsAfterBHit = 0;
-      let bHpAfterBHit = 0;
-      let battleTurnsAfterBHit = 0;
-      let aActivationsAfterBHit = 0;
-      let bActivationsAfterBHit = 0;
-      for (let hits = 1; hits < hitsB.length; hits += 1) {
-        const probability = hitsB[hits];
-        if (hits >= hpA) {
-          bHpAfterBHit += probability * hpB;
-        } else {
-          const remainingA = hpA - hits;
-          bPositiveResult += probability * aFirst[remainingA][hpB];
-          aTurnsAfterBHit += probability * aVictoryTurnsFromA[remainingA][hpB];
-          aHpAfterBHit += probability * aVictoryHpFromA[remainingA][hpB];
-          bTurnsAfterBHit += probability * bVictoryTurnsFromA[remainingA][hpB];
-          bHpAfterBHit += probability * bVictoryHpFromA[remainingA][hpB];
-          battleTurnsAfterBHit += probability * battleTurnsFromA[remainingA][hpB];
-          aActivationsAfterBHit += probability * aActivationsFromA[remainingA][hpB];
-          bActivationsAfterBHit += probability * bActivationsFromA[remainingA][hpB];
-        }
-      }
-
-      const denominator = 1 - hitsA[0] * hitsB[0];
-      aFirst[hpA][hpB] = (aPositiveResult + hitsA[0] * bPositiveResult) / denominator;
-      bFirst[hpA][hpB] = bPositiveResult + hitsB[0] * aFirst[hpA][hpB];
-
-      aVictoryTurnsFromA[hpA][hpB] = (
-        hitsA[0] * aTurnsAfterBHit
-        + aTurnsAfterAHit
-        + aFirst[hpA][hpB]
-      ) / denominator;
-      aVictoryTurnsFromB[hpA][hpB] = hitsB[0] * aVictoryTurnsFromA[hpA][hpB] + aTurnsAfterBHit;
-      aVictoryHpFromA[hpA][hpB] = (hitsA[0] * aHpAfterBHit + aHpAfterAHit) / denominator;
-      aVictoryHpFromB[hpA][hpB] = hitsB[0] * aVictoryHpFromA[hpA][hpB] + aHpAfterBHit;
-
-      const bWinChanceFromB = 1 - bFirst[hpA][hpB];
-      bVictoryTurnsFromA[hpA][hpB] = (
-        hitsA[0] * (bTurnsAfterBHit + bWinChanceFromB)
-        + bTurnsAfterAHit
-      ) / denominator;
-      bVictoryTurnsFromB[hpA][hpB] = hitsB[0] * bVictoryTurnsFromA[hpA][hpB]
-        + bTurnsAfterBHit
-        + bWinChanceFromB;
-      bVictoryHpFromA[hpA][hpB] = (hitsA[0] * bHpAfterBHit + bHpAfterAHit) / denominator;
-      bVictoryHpFromB[hpA][hpB] = hitsB[0] * bVictoryHpFromA[hpA][hpB] + bHpAfterBHit;
-
-      battleTurnsFromA[hpA][hpB] = (
-        1
-        + hitsA[0]
-        + hitsA[0] * battleTurnsAfterBHit
-        + battleTurnsAfterAHit
-      ) / denominator;
-      battleTurnsFromB[hpA][hpB] = 1
-        + hitsB[0] * battleTurnsFromA[hpA][hpB]
-        + battleTurnsAfterBHit;
-
-      aActivationsFromA[hpA][hpB] = (
-        1
-        + hitsA[0] * aActivationsAfterBHit
-        + aActivationsAfterAHit
-      ) / denominator;
-      aActivationsFromB[hpA][hpB] = hitsB[0] * aActivationsFromA[hpA][hpB]
-        + aActivationsAfterBHit;
-      bActivationsFromA[hpA][hpB] = (
-        hitsA[0] * (1 + bActivationsAfterBHit)
-        + bActivationsAfterAHit
-      ) / denominator;
-      bActivationsFromB[hpA][hpB] = 1
-        + hitsB[0] * bActivationsFromA[hpA][hpB]
-        + bActivationsAfterBHit;
-    }
-  }
-
-  const chanceAWhenFirst = aFirst[a.hp][b.hp];
-  const chanceAWhenSecond = bFirst[a.hp][b.hp];
-  const normalStateMetrics = (hpA, hpB) => ({
-    chanceA: (aFirst[hpA][hpB] + bFirst[hpA][hpB]) / 2,
-    battleTurns: (battleTurnsFromA[hpA][hpB] + battleTurnsFromB[hpA][hpB]) / 2,
-    battleRounds: (aActivationsFromA[hpA][hpB] + bActivationsFromB[hpA][hpB]) / 2,
-    weightedTurnsA: (aVictoryTurnsFromA[hpA][hpB] + aVictoryTurnsFromB[hpA][hpB]) / 2,
-    weightedHpA: (aVictoryHpFromA[hpA][hpB] + aVictoryHpFromB[hpA][hpB]) / 2,
-    weightedTurnsB: (bVictoryTurnsFromA[hpA][hpB] + bVictoryTurnsFromB[hpA][hpB]) / 2,
-    weightedHpB: (bVictoryHpFromA[hpA][hpB] + bVictoryHpFromB[hpA][hpB]) / 2
-  });
-  const normalMetrics = normalStateMetrics(a.hp, b.hp);
-  const speedAttacker = speedAttackerFor(a, b);
-  let chanceAOverall = normalMetrics.chanceA;
-  let battleTurns = normalMetrics.battleTurns;
-  let battleRounds = normalMetrics.battleRounds;
-  let weightedTurnsA = normalMetrics.weightedTurnsA;
-  let weightedHpA = normalMetrics.weightedHpA;
-  let weightedTurnsB = normalMetrics.weightedTurnsB;
-  let weightedHpB = normalMetrics.weightedHpB;
-
-  if (speedAttacker) {
-    chanceAOverall = 0;
-    battleTurns = 1;
-    battleRounds = 1;
-    weightedTurnsA = 0;
-    weightedHpA = 0;
-    weightedTurnsB = 0;
-    weightedHpB = 0;
-    const openingHits = speedAttacker === "a" ? hitsA : hitsB;
-    openingHits.forEach((probability, hits) => {
-      if (!probability) return;
-      const isLethal = speedAttacker === "a" ? hits >= b.hp : hits >= a.hp;
-      if (isLethal) {
-        if (speedAttacker === "a") {
-          chanceAOverall += probability;
-          weightedTurnsA += probability;
-          weightedHpA += probability * a.hp;
-        } else {
-          weightedTurnsB += probability;
-          weightedHpB += probability * b.hp;
-        }
-        return;
-      }
-
-      const remainingHpA = speedAttacker === "b" ? a.hp - hits : a.hp;
-      const remainingHpB = speedAttacker === "a" ? b.hp - hits : b.hp;
-      const continuation = normalStateMetrics(remainingHpA, remainingHpB);
-      const chanceB = 1 - continuation.chanceA;
-      chanceAOverall += probability * continuation.chanceA;
-      battleTurns += probability * continuation.battleTurns;
-      battleRounds += probability * continuation.battleRounds;
-      weightedTurnsA += probability * (
-        continuation.weightedTurnsA
-        + (speedAttacker === "a" ? continuation.chanceA : 0)
-      );
-      weightedHpA += probability * continuation.weightedHpA;
-      weightedTurnsB += probability * (
-        continuation.weightedTurnsB
-        + (speedAttacker === "b" ? chanceB : 0)
-      );
-      weightedHpB += probability * continuation.weightedHpB;
-    });
-  }
-
-  chanceAOverall = Math.min(1, Math.max(0, chanceAOverall));
-  const chanceBOverall = 1 - chanceAOverall;
-  const shareA = chanceAOverall * 100;
-  const soloTurnsA = expectedAttackTurnsToKill(hitsA, b.hp);
-  const soloTurnsB = expectedAttackTurnsToKill(hitsB, a.hp);
-  const victoryTurnsA = chanceAOverall > Number.EPSILON ? weightedTurnsA / chanceAOverall : null;
-  const victoryHpA = chanceAOverall > Number.EPSILON
-    ? Math.min(a.hp, Math.max(1, weightedHpA / chanceAOverall))
-    : null;
-  const victoryTurnsB = chanceBOverall > Number.EPSILON ? weightedTurnsB / chanceBOverall : null;
-  const victoryHpB = chanceBOverall > Number.EPSILON
-    ? Math.min(b.hp, Math.max(1, weightedHpB / chanceBOverall))
-    : null;
-  const result = {
-    a,
-    b,
-    combatModifier,
-    effectiveStrikeA: strikeA,
-    effectiveStrikeB: strikeB,
-    strikeAdjustmentA: adjustmentA,
-    strikeAdjustmentB: adjustmentB,
-    drillAdjustmentA,
-    drillAdjustmentB,
-    combatAdjustmentA,
-    combatAdjustmentB,
-    speedAttacker,
-    hitChanceA: chanceA,
-    hitChanceB: chanceB,
-    expectedHitsA: strikeA * chanceA / (1 - 1 / 6),
-    expectedHitsB: strikeB * chanceB / (1 - 1 / 6),
-    chanceAWhenFirst,
-    chanceAWhenSecond,
-    shareA,
-    victoryTurnsA,
-    victoryTurnsB,
-    victoryHpA,
-    victoryHpB,
-    battleTurns,
-    battleRounds,
-    soloTurnsA,
-    soloTurnsB,
-    winner: shareA > 50.000001 ? "a" : shareA < 49.999999 ? "b" : "even"
-  };
-
-  const reverse = {
-    a: b,
-    b: a,
-    combatModifier: -combatModifier,
-    effectiveStrikeA: strikeB,
-    effectiveStrikeB: strikeA,
-    strikeAdjustmentA: adjustmentB,
-    strikeAdjustmentB: adjustmentA,
-    drillAdjustmentA: drillAdjustmentB,
-    drillAdjustmentB: drillAdjustmentA,
-    combatAdjustmentA: combatAdjustmentB,
-    combatAdjustmentB: combatAdjustmentA,
-    speedAttacker: speedAttacker === "a" ? "b" : speedAttacker === "b" ? "a" : null,
-    hitChanceA: chanceB,
-    hitChanceB: chanceA,
-    expectedHitsA: strikeB * chanceB / (1 - 1 / 6),
-    expectedHitsB: strikeA * chanceA / (1 - 1 / 6),
-    chanceAWhenFirst: 1 - chanceAWhenSecond,
-    chanceAWhenSecond: 1 - chanceAWhenFirst,
-    shareA: 100 - shareA,
-    victoryTurnsA: victoryTurnsB,
-    victoryTurnsB: victoryTurnsA,
-    victoryHpA: victoryHpB,
-    victoryHpB: victoryHpA,
-    battleTurns,
-    battleRounds,
-    soloTurnsA: soloTurnsB,
-    soloTurnsB: soloTurnsA,
-    winner: shareA < 49.999999 ? "a" : shareA > 50.000001 ? "b" : "even"
-  };
-
-  matchupCache.set(key, result);
-  matchupCache.set(legacyMatchupKey(b, a, -combatModifier), reverse);
-  return result;
 }
 
 function matchupKey(
@@ -1683,13 +1274,6 @@ function hexToRgb(hex) {
   };
 }
 
-function mixColours(baseHex, colourHex, amount) {
-  const base = hexToRgb(baseHex);
-  const colour = hexToRgb(colourHex);
-  const mix = channel => Math.round(base[channel] + (colour[channel] - base[channel]) * amount);
-  return `rgb(${mix("r")}, ${mix("g")}, ${mix("b")})`;
-}
-
 function semanticMatrixColour(share) {
   const neutral = hexToRgb("#eeece5");
   const endpoint = hexToRgb(share >= 50 ? "#187659" : "#824a7a");
@@ -1809,31 +1393,6 @@ function formatPercentagePointDelta(value, digits = 0) {
   return `${rounded > 0 ? "+" : "−"}${Math.abs(rounded).toFixed(digits)}`;
 }
 
-function matrixScenarioImpact(matrixUnits, scenario) {
-  let totalDelta = 0;
-  let largestDelta = 0;
-  let flips = 0;
-  let matchupCount = 0;
-  matrixUnits.forEach(rowUnit => {
-    matrixUnits.forEach(opponent => {
-      if (rowUnit.id === opponent.id) return;
-      const neutral = getMatrixMatchup(rowUnit, opponent);
-      const modified = getMatrixMatchup(rowUnit, opponent, scenario.modifier);
-      const delta = modified.shareA - neutral.shareA;
-      totalDelta += delta;
-      largestDelta = Math.max(largestDelta, Math.abs(delta));
-      if (outcomeChanged(neutral, modified)) flips += 1;
-      matchupCount += 1;
-    });
-  });
-  return {
-    averageDelta: matchupCount ? totalDelta / matchupCount : 0,
-    largestDelta,
-    flips,
-    matchupCount
-  };
-}
-
 function matrixEngagementLength(matrixUnits, combatModifier = 0) {
   const rounds = [];
   matrixUnits.forEach(rowUnit => {
@@ -1854,147 +1413,6 @@ function matrixEngagementLength(matrixUnits, combatModifier = 0) {
     maximum: rounds.at(-1),
     count: rounds.length
   };
-}
-
-function updateBattlefieldSettings(change) {
-  change(battlefieldSettings);
-  battlefieldSettings = normaliseBattlefieldSettings(battlefieldSettings);
-  saveBattlefieldSettings();
-  matchupCache.clear();
-  renderMatrix();
-}
-
-function createPercentageSetting(label, value, onChange, title = "") {
-  const control = createElement("label", "battlefield-setting");
-  if (title) control.title = title;
-  const name = createElement("span", "", label);
-  const valueWrap = createElement("span", "battlefield-setting-value");
-  const input = createElement("input");
-  input.type = "number";
-  input.min = "0";
-  input.max = "100";
-  input.step = "1";
-  input.inputMode = "decimal";
-  input.value = String(Math.round(value * 1000) / 10);
-  input.addEventListener("change", () => {
-    const next = Math.min(100, Math.max(0, Number(input.value) || 0)) / 100;
-    onChange(next);
-  });
-  valueWrap.append(input, createElement("span", "", "%"));
-  control.append(name, valueWrap);
-  return control;
-}
-
-function renderBattlefieldSettingsPanel() {
-  const panel = createElement("details", "battlefield-settings");
-  const summary = createElement("summary");
-  const summaryText = createElement("span", "battlefield-settings-summary");
-  summaryText.append(
-    createElement("strong", "", "Battlefield assumptions"),
-    createElement(
-      "span",
-      "",
-      `${Math.round((1 - battlefieldSettings.noChargeChance) * 100)}% charge · ${Math.round(battlefieldSettings.flankOpportunityRate * 100)}% flank opportunity`
-    )
-  );
-  summary.append(summaryText, createElement("span", "battlefield-settings-chevron", "⌄"));
-  panel.append(summary);
-
-  const note = createElement(
-    "p",
-    "battlefield-settings-note",
-    "Provisional modelling frequencies—not literal combat rules. Charge bonuses apply only to the opening attack; a flank lasts for the opening attack and immediate reply."
-  );
-  const grid = createElement("div", "battlefield-settings-grid");
-
-  const openingGroup = createElement("section", "battlefield-settings-group");
-  openingGroup.append(
-    createElement("strong", "", "Opening access"),
-    createPercentageSetting(
-      "No meaningful charge",
-      battlefieldSettings.noChargeChance,
-      next => updateBattlefieldSettings(settings => { settings.noChargeChance = next; }),
-      "The remaining probability is split between the two units using the Speed-control bands."
-    ),
-    createPercentageSetting(
-      "Flank opportunity",
-      battlefieldSettings.flankOpportunityRate,
-      next => updateBattlefieldSettings(settings => { settings.flankOpportunityRate = next; }),
-      "Multiplied by the charger's Drill conversion chance."
-    )
-  );
-
-  const distanceGroup = createElement("section", "battlefield-settings-group");
-  distanceGroup.append(createElement("strong", "", "Charge-distance weights"));
-  battlefieldSettings.chargeDistanceBands.forEach((band, index) => {
-    distanceGroup.append(createPercentageSetting(
-      `${band.label} · +${band.bonus}`,
-      band.weight,
-      next => updateBattlefieldSettings(settings => {
-        settings.chargeDistanceBands[index].weight = next;
-      }),
-      `Available at Speed ${band.minSpeed}+; eligible weights are renormalized for each charger.`
-    ));
-  });
-
-  const speedGroup = createElement("section", "battlefield-settings-group");
-  speedGroup.append(createElement("strong", "", "Faster unit initiates"));
-  const equalSpeed = createElement("div", "battlefield-setting");
-  equalSpeed.title = "Equal Speed splits charge control evenly so swapping the two units remains complementary.";
-  equalSpeed.append(
-    createElement("span", "", "Equal Speed"),
-    createElement("span", "battlefield-setting-fixed", "50%")
-  );
-  speedGroup.append(equalSpeed);
-  [
-    ["Difference 1–2", "oneToTwo", "Conditional chance that the faster unit initiates."],
-    ["Difference 3–5", "threeToFive", "Conditional chance that the faster unit initiates."],
-    ["Difference 6+", "sixPlus", "Conditional chance that the faster unit initiates."]
-  ].forEach(([label, key, title]) => {
-    speedGroup.append(createPercentageSetting(
-      label,
-      battlefieldSettings.speedControl[key],
-      next => updateBattlefieldSettings(settings => { settings.speedControl[key] = next; }),
-      title
-    ));
-  });
-
-  const drillGroup = createElement("section", "battlefield-settings-group");
-  drillGroup.append(createElement("strong", "", "Drill flank conversion"));
-  [
-    ["−3 or less", "minusThree"],
-    ["−2", "minusTwo"],
-    ["−1", "minusOne"],
-    ["Equal", "equal"],
-    ["+1", "plusOne"],
-    ["+2", "plusTwo"],
-    ["+3 or more", "plusThree"]
-  ].forEach(([label, key]) => {
-    drillGroup.append(createPercentageSetting(
-      label,
-      battlefieldSettings.drillConversion[key],
-      next => updateBattlefieldSettings(settings => { settings.drillConversion[key] = next; }),
-      "Multiplied by the flank-opportunity rate after this unit initiates a charge."
-    ));
-  });
-
-  grid.append(openingGroup, distanceGroup, speedGroup, drillGroup);
-  const footer = createElement("div", "battlefield-settings-footer");
-  const reset = createElement("button", "button button-quiet", "Reset defaults");
-  reset.type = "button";
-  reset.addEventListener("click", event => {
-    event.preventDefault();
-    battlefieldSettings = normaliseBattlefieldSettings(DEFAULT_BATTLEFIELD_SETTINGS);
-    saveBattlefieldSettings();
-    matchupCache.clear();
-    renderMatrix();
-  });
-  footer.append(
-    createElement("span", "", "Eligible distance weights are automatically renormalized to 100%."),
-    reset
-  );
-  panel.append(note, grid, footer);
-  return panel;
 }
 
 function battlefieldBreakdownText(matchup) {
@@ -2716,13 +2134,6 @@ function renderHealth() {
   resultStage.replaceChildren(view);
 }
 
-function parseGeneratorTags(value) {
-  return String(value || "")
-    .split(",")
-    .map(tag => tag.trim())
-    .filter(Boolean);
-}
-
 function generatorUnitStatus(unit, constraint) {
   const lockedStats = GENERATOR_STATS.filter(stat => constraint.stats[stat.id].locked).length;
   const rangedStats = GENERATOR_STATS.filter(stat => {
@@ -2823,214 +2234,6 @@ function appendSelectOptions(select, options, selectedValue) {
     option.selected = String(value) === String(selectedValue);
     select.append(option);
   });
-}
-
-function estimateGeneratorMatchup(a, b, mode = "combat") {
-  const damageA = Math.max(.001, a.strike * hitChance(a, b) / (1 - 1 / 6));
-  const damageB = Math.max(.001, b.strike * hitChance(b, a) / (1 - 1 / 6));
-  const shareFromAttacks = (attacksA, attacksB) => {
-    const advantage = Math.log(Math.max(.001, attacksB) / Math.max(.001, attacksA));
-    return 100 / (1 + Math.exp(-advantage * 2.15));
-  };
-  const neutral = shareFromAttacks(b.hp / damageA, a.hp / damageB);
-  if (mode !== "battlefield") return neutral;
-
-  const expectedBonus = unit => accessibleChargeBands(unit, battlefieldSettings)
-    .reduce((total, band) => total + band.probability * band.bonus, 0);
-  const chargeShare = (charger, flank) => {
-    if (charger === "a") {
-      const openingDamage = Math.max(
-        .001,
-        (a.strike + expectedBonus(a) + (flank ? 1 : 0)) * hitChance(a, b) / (1 - 1 / 6)
-      );
-      const replyDamage = Math.max(
-        .001,
-        Math.max(1, b.strike - (flank ? 1 : 0)) * hitChance(b, a) / (1 - 1 / 6)
-      );
-      return shareFromAttacks(
-        Math.max(.05, (b.hp - openingDamage) / damageA),
-        a.hp / replyDamage
-      );
-    }
-    const openingDamage = Math.max(
-      .001,
-      (b.strike + expectedBonus(b) + (flank ? 1 : 0)) * hitChance(b, a) / (1 - 1 / 6)
-    );
-    const replyDamage = Math.max(
-      .001,
-      Math.max(1, a.strike - (flank ? 1 : 0)) * hitChance(a, b) / (1 - 1 / 6)
-    );
-    return shareFromAttacks(
-      b.hp / replyDamage,
-      Math.max(.05, (a.hp - openingDamage) / damageB)
-    );
-  };
-  const initiative = speedInitiativeShare(a, b, battlefieldSettings);
-  const flankA = battlefieldSettings.flankOpportunityRate
-    * drillConversionChance(a.drill - b.drill, battlefieldSettings);
-  const flankB = battlefieldSettings.flankOpportunityRate
-    * drillConversionChance(b.drill - a.drill, battlefieldSettings);
-  const aCharge = chargeShare("a", false) * (1 - flankA) + chargeShare("a", true) * flankA;
-  const bCharge = chargeShare("b", false) * (1 - flankB) + chargeShare("b", true) * flankB;
-  return battlefieldSettings.noChargeChance * neutral
-    + (1 - battlefieldSettings.noChargeChance) * (initiative.a * aCharge + initiative.b * bCharge);
-}
-
-function generatorShareMatrix(roster, mode = "combat") {
-  const matrix = Array.from({ length: roster.length }, () => new Float64Array(roster.length));
-  for (let first = 0; first < roster.length; first += 1) {
-    matrix[first][first] = 50;
-    for (let second = first + 1; second < roster.length; second += 1) {
-      const share = estimateGeneratorMatchup(roster[first], roster[second], mode);
-      matrix[first][second] = share;
-      matrix[second][first] = 100 - share;
-    }
-  }
-  return matrix;
-}
-
-function legacyGeneratorRosterMetrics(roster) {
-  const matrix = generatorShareMatrix(roster);
-  const unitTotal = roster.length;
-  const averages = roster.map((_, index) => {
-    let total = 0;
-    for (let opponent = 0; opponent < unitTotal; opponent += 1) {
-      if (opponent !== index) total += matrix[index][opponent];
-    }
-    return total / Math.max(1, unitTotal - 1);
-  });
-  const balanceError = Math.sqrt(
-    averages.reduce((total, average) => total + (average - 50) ** 2, 0) / Math.max(1, unitTotal)
-  );
-
-  const clearAdvantage = generatorConfig.settings.clearAdvantage;
-  let coveredUnits = 0;
-  roster.forEach((_, index) => {
-    const shares = [...matrix[index]].filter((__, opponent) => opponent !== index);
-    if (shares.some(share => share >= clearAdvantage)
-      && shares.some(share => share <= 100 - clearAdvantage)) coveredUnits += 1;
-  });
-
-  const nearestDistances = new Array(unitTotal).fill(Infinity);
-  if (unitTotal >= 4) {
-    for (let first = 0; first < unitTotal; first += 1) {
-      for (let second = first + 1; second < unitTotal; second += 1) {
-        let squaredDifference = 0;
-        let comparisons = 0;
-        for (let opponent = 0; opponent < unitTotal; opponent += 1) {
-          if (opponent === first || opponent === second) continue;
-          const centredFirst = matrix[first][opponent] - averages[first];
-          const centredSecond = matrix[second][opponent] - averages[second];
-          squaredDifference += (centredFirst - centredSecond) ** 2;
-          comparisons += 1;
-        }
-        const distance = comparisons ? Math.sqrt(squaredDifference / comparisons) : 0;
-        nearestDistances[first] = Math.min(nearestDistances[first], distance);
-        nearestDistances[second] = Math.min(nearestDistances[second], distance);
-      }
-    }
-  }
-  const finiteDistances = nearestDistances.filter(Number.isFinite);
-  const roleSeparation = finiteDistances.length
-    ? finiteDistances.reduce((total, value) => total + value, 0) / finiteDistances.length
-    : 0;
-
-  let extremePairs = 0;
-  let polarityPenalty = 0;
-  const hardCounter = generatorConfig.settings.hardCounter;
-  for (let first = 0; first < unitTotal; first += 1) {
-    for (let second = first + 1; second < unitTotal; second += 1) {
-      const decisiveShare = Math.max(matrix[first][second], 100 - matrix[first][second]);
-      if (decisiveShare > hardCounter) {
-        extremePairs += 1;
-        polarityPenalty += (decisiveShare - hardCounter) / Math.max(1, 100 - hardCounter);
-      }
-    }
-  }
-  const pairTotal = Math.max(1, unitTotal * (unitTotal - 1) / 2);
-  polarityPenalty /= pairTotal;
-
-  let stabilityDifference = 0;
-  if (generatorConfig.objectives.stability > 0) {
-    const combatMatrix = generatorShareMatrix(roster, "combat");
-    const battlefieldMatrix = generatorShareMatrix(roster, "battlefield");
-    for (let first = 0; first < unitTotal; first += 1) {
-      for (let second = first + 1; second < unitTotal; second += 1) {
-        stabilityDifference += Math.abs(
-          combatMatrix[first][second] - battlefieldMatrix[first][second]
-        );
-      }
-    }
-    stabilityDifference /= pairTotal;
-  }
-
-  let changeTotal = 0;
-  let changeParts = 0;
-  roster.forEach((unit, index) => {
-    const original = units[index];
-    const constraint = generatorConstraintFor(original);
-    GENERATOR_STATS.forEach(stat => {
-      const range = constraint.stats[stat.id];
-      const scale = Math.max(1, Math.min(12, range.max - range.min));
-      changeTotal += Math.min(1, Math.abs(unit[stat.id] - original[stat.id]) / scale);
-      changeParts += 1;
-    });
-    changeTotal += unit.ap === original.ap ? 0 : 1;
-    changeParts += 1;
-  });
-  const changeDistance = changeTotal / Math.max(1, changeParts);
-
-  const tagSets = roster.map(unit => new Set(
-    parseGeneratorTags(generatorConstraintFor(unit).tags).map(tag => tag.toLowerCase())
-  ));
-  let intentPenalty = 0;
-  let intentCount = 0;
-  roster.forEach((unit, index) => {
-    const constraint = generatorConstraintFor(unit);
-    const goodAgainst = parseGeneratorTags(constraint.goodAgainst).map(tag => tag.toLowerCase());
-    const weakAgainst = parseGeneratorTags(constraint.weakAgainst).map(tag => tag.toLowerCase());
-    roster.forEach((_, opponent) => {
-      if (opponent === index) return;
-      if (goodAgainst.some(tag => tagSets[opponent].has(tag))) {
-        intentPenalty += Math.max(0, clearAdvantage - matrix[index][opponent]) / Math.max(1, clearAdvantage - 50);
-        intentCount += 1;
-      }
-      if (weakAgainst.some(tag => tagSets[opponent].has(tag))) {
-        intentPenalty += Math.max(0, matrix[index][opponent] - (100 - clearAdvantage)) / Math.max(1, clearAdvantage - 50);
-        intentCount += 1;
-      }
-    });
-  });
-  const intentScore = intentCount ? 1 - Math.min(1, intentPenalty / intentCount) : 1;
-
-  const components = {
-    balance: 1 - Math.min(1, balanceError / 25),
-    diversity: unitTotal >= 4 ? Math.min(1, roleSeparation / 24) : .5,
-    coverage: coveredUnits / Math.max(1, unitTotal),
-    polarity: 1 - Math.min(1, polarityPenalty + extremePairs / pairTotal * 2),
-    stability: 1 - Math.min(1, stabilityDifference / 20),
-    minimalChanges: 1 - Math.min(1, changeDistance)
-  };
-  const priorityWeight = [0, 1, 3, 6];
-  let weightedScore = 0;
-  let weightTotal = 0;
-  GENERATOR_OBJECTIVES.forEach(objective => {
-    const weight = priorityWeight[generatorConfig.objectives[objective.id]];
-    weightedScore += components[objective.id] * weight;
-    weightTotal += weight;
-  });
-  const intentWeight = intentCount ? 8 : 0;
-  const score = 100 * (weightedScore + intentScore * intentWeight) / Math.max(1, weightTotal + intentWeight);
-  return {
-    score,
-    balanceError,
-    roleSeparation,
-    coveredUnits,
-    extremePairs,
-    stabilityDifference,
-    changeDistance,
-    intentScore
-  };
 }
 
 function generatorRosterMetrics(roster) {
