@@ -644,26 +644,35 @@ function finaliseRoundCombat(
 }
 
 /**
- * Resolve a self-contained melee engagement under the simplified round model:
- * one randomly selected unit charges and attacks first; wounds from the first
- * strike disrupt only the second striker; later round initiative is an
- * independent 50/50 choice; and disruption clears after each round. Charging
- * itself adds no dice—the advantage comes from attacking and disrupting first.
+ * Resolve a self-contained melee engagement under either combat ruleset.
+ * Disruption removes wounds caused earlier in a round from the second strike.
+ * Penalties removes that wound penalty and makes each selected modifier die a
+ * reciprocal +1/-1 adjustment between the two units.
  */
 export function resolveRulesMatchup(a, b, options = {}) {
   const attackBonusA = options && typeof options === "object"
-    ? clamp(Math.round(Number(options.attackBonusA) || 0), 0, 2)
+    ? clamp(Math.round(Number(options.attackBonusA) || 0), 0, 4)
     : 0;
   const attackBonusB = options && typeof options === "object"
-    ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 2)
+    ? clamp(Math.round(Number(options.attackBonusB) || 0), 0, 4)
     : 0;
+  const ruleSet = options && typeof options === "object" && options.ruleSet === "penalties"
+    ? "penalties"
+    : "disruption";
+  const woundDisruption = ruleSet === "disruption";
   const explodingSixes = !(options && typeof options === "object" && options.explodingSixes === false);
   const criticalFail = Boolean(options && typeof options === "object" && options.criticalFail);
   const chargeBonus = COMBAT_CHARGE_BONUS;
   const chargeProbabilityA = 0.5;
   const chargeProbabilityB = 0.5;
-  const effectiveStrikeA = Math.max(1, a.strike + attackBonusA);
-  const effectiveStrikeB = Math.max(1, b.strike + attackBonusB);
+  const modifierAdjustmentA = ruleSet === "penalties"
+    ? attackBonusA - attackBonusB
+    : attackBonusA;
+  const modifierAdjustmentB = ruleSet === "penalties"
+    ? attackBonusB - attackBonusA
+    : attackBonusB;
+  const effectiveStrikeA = Math.max(1, a.strike + modifierAdjustmentA);
+  const effectiveStrikeB = Math.max(1, b.strike + modifierAdjustmentB);
   const chanceA = hitChance(a, b);
   const chanceB = hitChance(b, a);
   const distributionCache = new Map();
@@ -713,7 +722,9 @@ export function resolveRulesMatchup(a, b, options = {}) {
   function currentRound(first, firstHits) {
     const second = first === "a" ? "b" : "a";
     const secondBasePool = second === "a" ? effectiveStrikeA : effectiveStrikeB;
-    const secondPool = Math.max(1, secondBasePool - firstHits);
+    const secondPool = woundDisruption
+      ? Math.max(1, secondBasePool - firstHits)
+      : secondBasePool;
     const disruption = secondBasePool - secondPool;
     return {
       second,
@@ -904,6 +915,10 @@ export function resolveRulesMatchup(a, b, options = {}) {
   return finaliseRoundCombat(a, b, overall, effectiveStrikeA, effectiveStrikeB, explodingSixes, {
     attackBonusA,
     attackBonusB,
+    modifierAdjustmentA,
+    modifierAdjustmentB,
+    ruleSet,
+    woundDisruption,
     criticalFail,
     chargeBonus,
     chargeProbabilityA,

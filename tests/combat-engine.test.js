@@ -159,6 +159,53 @@ test("an individual attack advantage can be increased to +2 dice", () => {
   assert.ok(plusTwo.shareA > plusOne.shareA);
 });
 
+test("Penalties removes same-round wound disruption", () => {
+  const a = unit({ name: "A", strike: 6, defense: 4, hp: 7 });
+  const b = unit({ name: "B", strike: 6, defense: 4, hp: 7 });
+  const disruption = resolveRulesMatchup(a, b, { ruleSet: "disruption" });
+  const penalties = resolveRulesMatchup(a, b, { ruleSet: "penalties" });
+
+  assert.equal(disruption.ruleSet, "disruption");
+  assert.equal(disruption.woundDisruption, true);
+  assert.ok(disruption.averageDisruptionA > 0);
+  assert.ok(disruption.averageDisruptionB > 0);
+  assert.equal(penalties.ruleSet, "penalties");
+  assert.equal(penalties.woundDisruption, false);
+  assert.equal(penalties.averageDisruptionA, 0);
+  assert.equal(penalties.averageDisruptionB, 0);
+});
+
+test("Penalties turns each modifier die into a reciprocal bonus and penalty", () => {
+  const a = unit({ name: "A", strike: 5, defense: 4 });
+  const b = unit({ name: "B", strike: 5, defense: 4 });
+  const advantaged = resolveRulesMatchup(a, b, {
+    ruleSet: "penalties",
+    attackBonusA: 2
+  });
+
+  assert.equal(advantaged.attackBonusA, 2);
+  assert.equal(advantaged.attackBonusB, 0);
+  assert.equal(advantaged.modifierAdjustmentA, 2);
+  assert.equal(advantaged.modifierAdjustmentB, -2);
+  assert.equal(advantaged.effectiveStrikeA, 7);
+  assert.equal(advantaged.effectiveStrikeB, 3);
+  assert.ok(advantaged.shareA > 50);
+  const reversed = resolveRulesMatchup(b, a, {
+    ruleSet: "penalties",
+    attackBonusB: 2
+  });
+  assert.ok(Math.abs(advantaged.shareA + reversed.shareA - 100) < 1e-9);
+
+  const offset = resolveRulesMatchup(a, b, {
+    ruleSet: "penalties",
+    attackBonusA: 4,
+    attackBonusB: 4
+  });
+  assert.equal(offset.effectiveStrikeA, 5);
+  assert.equal(offset.effectiveStrikeB, 5);
+  assert.ok(Math.abs(offset.shareA - 50) < 1e-9);
+});
+
 test("mirror engagements produce complete symmetric results", () => {
   const cavalry = unit({ name: "Cavalry", strike: 7, defense: 4, hp: 7 });
   for (const options of [{}, { attackBonusA: 1, attackBonusB: 1 }]) {

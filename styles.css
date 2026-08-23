@@ -1593,6 +1593,11 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
+.matrix-row-score.changed {
+  color: #64751f;
+  font-weight: 850;
+}
+
 .matrix-row-bonus {
   width: 28px;
   height: 20px;
@@ -1620,9 +1625,16 @@ h2 {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .5);
 }
 
-.matrix-row-bonus[data-bonus="2"] {
+.matrix-row-bonus[data-bonus="2"],
+.matrix-row-bonus[data-bonus="3"],
+.matrix-row-bonus[data-bonus="4"] {
   border-color: #b26e28;
   background: #f2bf65;
+}
+
+.matrix-row-bonus[data-bonus="4"] {
+  border-color: #995323;
+  background: #eaa54d;
 }
 
 .matrix-row span:last-child {
