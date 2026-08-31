@@ -51,19 +51,12 @@
             <h1 id="rosterTitle">Units</h1>
             <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
-          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks hit on 3+.">
-            <span>Hits</span> on target DEF+ <i></i> AP hits on 3+
+          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks use the lower of Defence and 3.">
+            <span>Hits</span> on target DEF+ <i></i> AP uses lower of DEF / 3
           </div>
-          <label class="exploding-rule-control" title="When enabled, every natural 6 scores its hit and rolls another die against the same target number. Additional dice can also explode.">
-            <input id="explodingSixesToggle" type="checkbox" checked>
-            <span class="exploding-rule-toggle" aria-hidden="true"></span>
-            <span>Exploding 6s</span>
-          </label>
-          <label class="critical-fail-rule-control" title="When enabled, every natural 1 lets the defender retaliate with one attack die using its normal target number.">
-            <input id="criticalFailToggle" type="checkbox">
-            <span class="critical-fail-rule-toggle" aria-hidden="true"></span>
-            <span>Critical Fail</span>
-          </label>
+          <div class="fixed-rule-note" title="Every natural 6 rolls one additional die against the same target number. Additional dice can also generate additional dice.">
+            Critical 6s always on
+          </div>
           <button class="add-unit" id="addUnitButton" type="button">
             <span aria-hidden="true">+</span> Add unit
           </button>
@@ -114,11 +107,16 @@
         </button>
       </div>
       <div class="stats-row">
-        <label class="stat-control speed-control" title="Speed rating (not used by the Combat Matrix)"><span>SPD</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
+        <label class="stat-control speed-control" title="Mobility rating; 3 or greater gives −2 to shooting attacks targeting this unit"><span>MOB</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
         <label class="stat-control drill-control" title="Drill rating (not used by the Combat Matrix)"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
         <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
-        <label class="ap-control" title="This unit hits on 3+ regardless of its target's Defence">
+        <label class="shooting-control" title="This unit uses shooting attacks; targets with Mobility 3+ impose −2 dice">
+          <input type="checkbox" data-field="shooting">
+          <span class="shooting-toggle" aria-hidden="true"></span>
+          <span>Shoot</span>
+        </label>
+        <label class="ap-control" title="This unit's attack stat is armour-piercing and uses the lower of the target's Defence and 3">
           <input type="checkbox" data-field="ap">
           <span class="ap-toggle" aria-hidden="true"></span>
           <span>AP</span>

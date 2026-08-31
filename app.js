@@ -1,7 +1,5 @@
 import {
-  battlefieldSettingsKey,
-  normaliseBattlefieldSettings,
-  resolveBattlefieldMatchup,
+  attackTargetNumber,
   resolveRulesMatchup
 } from "./combat-engine.js";
 import { generatorRosterMetrics as calculateGeneratorMetrics } from "./generator-engine.js";
@@ -14,11 +12,6 @@ const MATCHUP_ORDER_KEY = "matchup-board-matchup-orders-v1";
 const MATRIX_SORT_KEY = "matchup-board-matrix-sort-v1";
 const MATRIX_SCENARIO_KEY = "matchup-board-matrix-scenario-v1";
 const MATRIX_CUSTOM_ORDER_KEY = "matchup-board-matrix-custom-order-v1";
-const MATRIX_ATTACK_BONUS_KEY = "matchup-board-matrix-attack-bonus-v1";
-const COMBAT_RULE_SET_KEY = "matchup-board-combat-rule-set-v1";
-const EXPLODING_SIXES_KEY = "matchup-board-exploding-sixes-v1";
-const CRITICAL_FAIL_KEY = "matchup-board-critical-fail-v1";
-const BATTLEFIELD_SETTINGS_KEY = "matchup-board-battlefield-settings-v1";
 const COUNTER_THRESHOLD_KEY = "matchup-board-counter-threshold-v1";
 const UNIT_SETS_KEY = "matchup-board-unit-sets-v1";
 const UNIT_SET_COOKIE_PREFIX = "matchup-board-unit-set-v1-";
@@ -27,7 +20,6 @@ const GENERATOR_CONFIG_KEY = "matchup-board-generator-config-v2";
 const GENERATOR_UNIT_COOKIE_PREFIX = "matchup-board-generator-unit-v2-";
 const MAX_UNITS = 16;
 const MIN_UNITS = 2;
-const MAX_MATRIX_ATTACK_BONUS = 4;
 const PALETTE = ["#c95f4b", "#597fb3", "#d49a38", "#64865a", "#8b68a5", "#3e9a96"];
 
 const DEFAULT_UNITS = [
@@ -56,21 +48,22 @@ const GENERATOR_OBJECTIVES = [
   { id: "diversity", name: "Unit diversity", description: "Spread out centred specialization profiles and create varied strengths and weaknesses." },
   { id: "advantageImpact", name: "+1 advantage impact", description: "Make one extra attack die move units meaningfully up the Strength ranking." },
   { id: "engagementLength", name: "Engagement length", description: "Keep the roster's average engagement close to your target number of rounds." },
-  { id: "mobilityTax", name: "Speed and Drill tax", description: "Make high-mobility, high-drill units weaker in the base combat ranking." },
+  { id: "mobilityTax", name: "Mobility and Drill tax", description: "Make high-mobility, high-drill units weaker in the base combat ranking." },
   { id: "apTax", name: "AP attack-die tax", description: "Give AP units fewer attack dice than otherwise similar non-AP units." }
 ];
 
 const GENERATOR_STATS = [
-  { id: "speed", label: "SPD", name: "Speed", min: 0, max: 99 },
+  { id: "speed", label: "MOB", name: "Mobility", min: 0, max: 99 },
   { id: "drill", label: "DRL", name: "Drill", min: 0, max: 99 },
   { id: "strike", label: "STR", name: "Strength", min: 1, max: 99 },
   { id: "defense", label: "DEF", name: "Defence", min: 1, max: 6 }
 ];
 
 const COMBAT_SCENARIOS = [
-  { id: "neutral", label: "Neutral", shortLabel: "N", modifier: 0, description: "No positional STR modifier" },
-  { id: "one-advantage", label: "1 advantage", shortLabel: "1A", modifier: 1, description: "Row +1 STR · column −1 STR" },
-  { id: "two-advantages", label: "2 advantages", shortLabel: "2A", modifier: 2, description: "Row +2 STR · column −2 STR" }
+  { id: "neutral", label: "Neutral", shortLabel: "N", heightAdvantage: 0, outflanker: null, description: "No height or outflanking modifier" },
+  { id: "higher", label: "Row higher", shortLabel: "H", heightAdvantage: 1, outflanker: null, description: "Row attacker +1; column attacker −1" },
+  { id: "outflanking", label: "Column outflanked", shortLabel: "O", heightAdvantage: 0, outflanker: "a", description: "Column target is outflanked: row +2, column −2; applies once regardless of flankers" },
+  { id: "combined", label: "Higher + outflanked", shortLabel: "H+O", heightAdvantage: 1, outflanker: "a", description: "Row is higher and column is outflanked; the modifiers stack" }
 ];
 
 const unitGrid = document.querySelector("#unitGrid");
@@ -92,8 +85,6 @@ const resultsPanel = document.querySelector(".results-panel");
 const resultsTitle = document.querySelector("#resultsTitle");
 const resultsMeta = document.querySelector("#resultsMeta");
 const outcomeKey = document.querySelector(".outcome-key");
-const explodingSixesToggle = document.querySelector("#explodingSixesToggle");
-const criticalFailToggle = document.querySelector("#criticalFailToggle");
 const unitCardTemplate = document.querySelector("#unitCardTemplate");
 const viewButtons = [...document.querySelectorAll(".view-button")];
 
@@ -104,12 +95,6 @@ let activeView = loadView();
 let matrixSort = loadMatrixSort();
 let matrixScenario = loadMatrixScenario();
 let matrixCustomOrder = loadMatrixCustomOrder();
-let matrixMode = "combat";
-let matrixAttackBonuses = loadMatrixAttackBonuses();
-let combatRuleSet = loadCombatRuleSet();
-let explodingSixes = loadExplodingSixes();
-let criticalFail = loadCriticalFail();
-let battlefieldSettings = loadBattlefieldSettings();
 let counterThreshold = loadCounterThreshold();
 let similarityMetric = loadSimilarityMetric();
 let matchupCache = new Map();
@@ -147,6 +132,7 @@ function sanitiseUnits(value) {
     strike: safeNumber(unit.strike, 1, 1, 99),
     drill: safeNumber(unit.drill, 0, 0, 99),
     speed: safeNumber(unit.speed, 0, 0, 99),
+    shooting: Boolean(unit.shooting),
     ap: Boolean(unit.ap),
     defense: safeNumber(unit.defense, 4, 1, 6),
     hp: 7,
@@ -160,8 +146,8 @@ function validSavedUnits(value) {
 
 function isExampleRoster(value) {
   if (!validSavedUnits(value) || value.length !== DEFAULT_UNITS.length) return false;
-  const comparable = unitsToCompare => sanitiseUnits(unitsToCompare).map(({ id, name, strike, drill, speed, ap, defense, hp, color }) => (
-    { id, name, strike, drill, speed, ap, defense, hp, color }
+  const comparable = unitsToCompare => sanitiseUnits(unitsToCompare).map(({ id, name, strike, drill, speed, shooting, ap, defense, hp, color }) => (
+    { id, name, strike, drill, speed, shooting, ap, defense, hp, color }
   ));
   return JSON.stringify(comparable(value)) === JSON.stringify(comparable(DEFAULT_UNITS));
 }
@@ -485,62 +471,6 @@ function saveSimilarityMetric() {
   writeCookieValue(SIMILARITY_METRIC_KEY, similarityMetric);
 }
 
-function loadExplodingSixes() {
-  try {
-    const saved = readCookieValue(EXPLODING_SIXES_KEY) ?? localStorage.getItem(EXPLODING_SIXES_KEY);
-    return saved === null ? true : saved !== "false";
-  } catch {
-    return true;
-  }
-}
-
-function loadCombatRuleSet() {
-  try {
-    const saved = readCookieValue(COMBAT_RULE_SET_KEY) ?? localStorage.getItem(COMBAT_RULE_SET_KEY);
-    return saved === "penalties" ? "penalties" : "disruption";
-  } catch {
-    return "disruption";
-  }
-}
-
-function saveCombatRuleSet() {
-  try {
-    localStorage.setItem(COMBAT_RULE_SET_KEY, combatRuleSet);
-  } catch {
-    // The selected ruleset still works for the current session.
-  }
-  writeCookieValue(COMBAT_RULE_SET_KEY, combatRuleSet);
-}
-
-function saveExplodingSixes() {
-  const saved = String(explodingSixes);
-  try {
-    localStorage.setItem(EXPLODING_SIXES_KEY, saved);
-  } catch {
-    // The selected rule still works for the current session.
-  }
-  writeCookieValue(EXPLODING_SIXES_KEY, saved);
-}
-
-function loadCriticalFail() {
-  try {
-    const saved = readCookieValue(CRITICAL_FAIL_KEY) ?? localStorage.getItem(CRITICAL_FAIL_KEY);
-    return saved === "true";
-  } catch {
-    return false;
-  }
-}
-
-function saveCriticalFail() {
-  const saved = String(criticalFail);
-  try {
-    localStorage.setItem(CRITICAL_FAIL_KEY, saved);
-  } catch {
-    // The selected rule still works for the current session.
-  }
-  writeCookieValue(CRITICAL_FAIL_KEY, saved);
-}
-
 function loadMatrixSort() {
   const saved = readCookieValue(MATRIX_SORT_KEY) || localStorage.getItem(MATRIX_SORT_KEY);
   return ["strength", "custom"].includes(saved) ? saved : "strength";
@@ -564,6 +494,15 @@ function loadMatrixScenario() {
   }
 }
 
+function saveMatrixScenario() {
+  try {
+    localStorage.setItem(MATRIX_SCENARIO_KEY, matrixScenario);
+  } catch {
+    // The selected situation still works for the current session.
+  }
+  writeCookieValue(MATRIX_SCENARIO_KEY, matrixScenario);
+}
+
 function loadMatrixCustomOrder() {
   try {
     const saved = JSON.parse(readCookieValue(MATRIX_CUSTOM_ORDER_KEY) || localStorage.getItem(MATRIX_CUSTOM_ORDER_KEY));
@@ -583,60 +522,9 @@ function saveMatrixCustomOrder() {
   writeCookieValue(MATRIX_CUSTOM_ORDER_KEY, value);
 }
 
-function loadMatrixAttackBonuses() {
-  try {
-    const saved = JSON.parse(
-      readCookieValue(MATRIX_ATTACK_BONUS_KEY)
-      || localStorage.getItem(MATRIX_ATTACK_BONUS_KEY)
-      || "[]"
-    );
-    if (Array.isArray(saved)) {
-      return new Map(saved.map(id => [String(id), 1]));
-    }
-    return new Map(Object.entries(saved || {}).map(([id, value]) => [
-      String(id),
-      Math.min(MAX_MATRIX_ATTACK_BONUS, Math.max(0, Math.round(Number(value) || 0)))
-    ]).filter(([, value]) => value > 0));
-  } catch {
-    return new Map();
-  }
-}
-
-function saveMatrixAttackBonuses() {
-  const value = JSON.stringify(Object.fromEntries(matrixAttackBonuses));
-  try {
-    localStorage.setItem(MATRIX_ATTACK_BONUS_KEY, value);
-  } catch {
-    // Attack bonuses still work for the current session.
-  }
-  writeCookieValue(MATRIX_ATTACK_BONUS_KEY, value);
-}
-
-function pruneMatrixAttackBonusIds() {
-  const activeIds = new Set(units.map(unit => unit.id));
-  const next = new Map([...matrixAttackBonuses].filter(([id]) => activeIds.has(id)));
-  if (next.size === matrixAttackBonuses.size) return;
-  matrixAttackBonuses = next;
-  saveMatrixAttackBonuses();
-}
-
 function loadCounterThreshold() {
   const saved = Number(localStorage.getItem(COUNTER_THRESHOLD_KEY));
   return [60, 65, 70, 75, 80].includes(saved) ? saved : 80;
-}
-
-function loadBattlefieldSettings() {
-  let saved = null;
-  try {
-    saved = JSON.parse(
-      readCookieValue(BATTLEFIELD_SETTINGS_KEY)
-      ?? localStorage.getItem(BATTLEFIELD_SETTINGS_KEY)
-      ?? "null"
-    );
-  } catch {
-    // Use the provisional defaults when stored settings are unavailable.
-  }
-  return normaliseBattlefieldSettings(saved);
 }
 
 function saveUnits() {
@@ -703,6 +591,7 @@ function renderEditor() {
     const drillInput = card.querySelector('[data-field="drill"]');
     const speedInput = card.querySelector('[data-field="speed"]');
     const defenseInput = card.querySelector('[data-field="defense"]');
+    const shootingInput = card.querySelector('[data-field="shooting"]');
     const apInput = card.querySelector('[data-field="ap"]');
     const removeButton = card.querySelector('[data-action="remove"]');
 
@@ -712,6 +601,7 @@ function renderEditor() {
     drillInput.value = unit.drill;
     speedInput.value = unit.speed;
     defenseInput.value = unit.defense;
+    shootingInput.checked = Boolean(unit.shooting);
     apInput.checked = unit.ap;
     removeButton.disabled = units.length <= MIN_UNITS;
     removeButton.setAttribute("aria-label", `Remove ${unit.name}`);
@@ -908,29 +798,18 @@ function enableMatchupRowSorting() {
   });
 }
 
-function matchupKey(
-  a,
-  b,
-  combatModifier = 0,
-  mode = "combat",
-  attackBonusA = 0,
-  attackBonusB = 0
-) {
+function matchupKey(a, b, scenario = COMBAT_SCENARIOS[0]) {
   const unitKey = unit => [
     unit.id,
     unit.strike,
     unit.drill,
     unit.speed,
+    unit.shooting ? 1 : 0,
     unit.ap ? 1 : 0,
     unit.defense,
     unit.hp
   ].join(":");
-  const settingsPart = mode === "battlefield"
-    ? battlefieldSettingsKey(battlefieldSettings)
-    : `charge-${combatRuleSet}-v7:exploding-${explodingSixes ? "on" : "off"}:critical-${criticalFail ? "on" : "off"}`;
-  const effectiveModifier = mode === "battlefield" ? combatModifier : 0;
-  const bonusPart = mode === "combat" ? `${attackBonusA}:${attackBonusB}` : "0:0";
-  return `${mode}:${settingsPart}:${effectiveModifier}:${bonusPart}|${unitKey(a)}|${unitKey(b)}`;
+  return `current-v8:${scenario.id}|${unitKey(a)}|${unitKey(b)}`;
 }
 
 function reverseCombatMatchup(matchup) {
@@ -959,11 +838,14 @@ function reverseCombatMatchup(matchup) {
     expectedHitsB: matchup.expectedHitsA,
     expectedChargeHitsA: matchup.expectedChargeHitsB,
     expectedChargeHitsB: matchup.expectedChargeHitsA,
-    criticalFail: matchup.criticalFail,
-    attackBonusA: matchup.attackBonusB,
-    attackBonusB: matchup.attackBonusA,
     modifierAdjustmentA: matchup.modifierAdjustmentB,
     modifierAdjustmentB: matchup.modifierAdjustmentA,
+    heightAdjustmentA: matchup.heightAdjustmentB,
+    heightAdjustmentB: matchup.heightAdjustmentA,
+    outflankAdjustmentA: matchup.outflankAdjustmentB,
+    outflankAdjustmentB: matchup.outflankAdjustmentA,
+    evasionAdjustmentA: matchup.evasionAdjustmentB,
+    evasionAdjustmentB: matchup.evasionAdjustmentA,
     chargeProbabilityA: matchup.chargeProbabilityB,
     chargeProbabilityB: matchup.chargeProbabilityA,
     chanceAWhenFirst: 1 - matchup.chanceAWhenSecond,
@@ -978,8 +860,6 @@ function reverseCombatMatchup(matchup) {
     victoryHpB: matchup.victoryHpA,
     aActivations: matchup.bActivations,
     bActivations: matchup.aActivations,
-    averageDisruptionA: matchup.averageDisruptionB,
-    averageDisruptionB: matchup.averageDisruptionA,
     soloTurnsA: matchup.soloTurnsB,
     soloTurnsB: matchup.soloTurnsA,
     winner: reverseShare > 50.000001 ? "a" : reverseShare < 49.999999 ? "b" : "even",
@@ -987,19 +867,12 @@ function reverseCombatMatchup(matchup) {
   };
 }
 
-function getMatchup(
-  a,
-  b,
-  combatModifier = 0,
-  mode = "combat",
-  attackBonusA = 0,
-  attackBonusB = 0
-) {
-  const key = matchupKey(a, b, combatModifier, mode, attackBonusA, attackBonusB);
+function getMatchup(a, b, scenario = COMBAT_SCENARIOS[0]) {
+  const key = matchupKey(a, b, scenario);
   const cached = matchupCache.get(key);
   if (cached) return cached;
-  if (mode === "combat") {
-    const reverseKey = matchupKey(b, a, 0, mode, attackBonusB, attackBonusA);
+  if (scenario.id === "neutral") {
+    const reverseKey = matchupKey(b, a, scenario);
     const cachedReverse = matchupCache.get(reverseKey);
     if (cachedReverse) {
       const reversed = reverseCombatMatchup(cachedReverse);
@@ -1007,34 +880,22 @@ function getMatchup(
       return reversed;
     }
   }
-  const matchup = mode === "battlefield"
-    ? resolveBattlefieldMatchup(a, b, combatModifier, battlefieldSettings)
-    : resolveRulesMatchup(a, b, {
-      attackBonusA,
-      attackBonusB,
-      ruleSet: combatRuleSet,
-      explodingSixes,
-      criticalFail
-    });
+  const matchup = resolveRulesMatchup(a, b, {
+    heightAdvantage: scenario.heightAdvantage,
+    outflanker: scenario.outflanker,
+    scenarioId: scenario.id
+  });
   matchupCache.set(key, matchup);
   return matchup;
 }
 
-function getMatrixMatchup(a, b, combatModifier = 0) {
-  const attackBonusA = matrixMode === "combat" ? matrixAttackBonuses.get(a.id) || 0 : 0;
-  const attackBonusB = matrixMode === "combat" ? matrixAttackBonuses.get(b.id) || 0 : 0;
-  return getMatchup(
-    a,
-    b,
-    combatModifier,
-    matrixMode,
-    attackBonusA,
-    attackBonusB
-  );
+function getMatrixMatchup(a, b, scenario = COMBAT_SCENARIOS[0]) {
+  return getMatchup(a, b, scenario);
 }
 
 function hitTarget(attacker, defender) {
-  return attacker.ap ? "3+ (AP)" : `${defender.defense}+`;
+  const target = attackTargetNumber(attacker, defender);
+  return attacker.ap ? `${target}+ (AP)` : `${target}+`;
 }
 
 function signedModifier(value) {
@@ -1042,40 +903,23 @@ function signedModifier(value) {
   return `${value > 0 ? "+" : "−"}${Math.abs(value)}`;
 }
 
-function matchupStrikeText(unit, effectiveStrike, drillAdjustment, combatAdjustment, modifierAdjustment = 0) {
+function matchupStrikeText(unit, effectiveStrike, heightAdjustment, outflankAdjustment, evasionAdjustment) {
   const changes = [];
-  if (drillAdjustment) changes.push(`Drill ${signedModifier(drillAdjustment)}`);
-  if (combatAdjustment) changes.push(`position ${signedModifier(combatAdjustment)}`);
-  if (modifierAdjustment) changes.push(`matrix modifier ${signedModifier(modifierAdjustment)}`);
+  if (heightAdjustment) changes.push(`height ${signedModifier(heightAdjustment)}`);
+  if (outflankAdjustment) changes.push(`outflanking ${signedModifier(outflankAdjustment)}`);
+  if (evasionAdjustment) changes.push(`evasion ${signedModifier(evasionAdjustment)}`);
   if (!changes.length) return `${effectiveStrike} dice`;
   return `${effectiveStrike} dice (base STR ${unit.strike}, ${changes.join(", ")})`;
 }
 
-function matchupInitiativeText(matchup) {
-  if (matchup.mode === "battlefield") {
-    return "Battlefield estimate weights neutral, frontal-charge and flank-charge openings; Speed affects charge control and Drill affects flank conversion.";
-  }
-  const sixes = matchup.explodingSixes
-    ? "Every natural 6 scores a hit and rolls another die against the same target number; additional 6s repeat the process."
-    : "Natural 6s do not generate additional dice.";
-  const failures = matchup.criticalFail
-    ? "Every natural 1 lets the living defender immediately retaliate with one die per 1, using its normal target number; these retaliation dice can explode but do not cause further Critical Fail reactions."
-    : "Critical Fail is disabled.";
-  const roundRule = matchup.ruleSet === "penalties"
-    ? "Wounds suffered earlier in the round do not reduce the second strike. Each selected modifier die adds one die to that unit and removes one die from its opponent, with a minimum attack pool of one."
-    : "Wounds suffered earlier in the round remove that many dice from the second strike, to a minimum of one die.";
-  return `Both possible chargers are weighted equally. Charging adds no dice; it only determines who strikes first. In later rounds either unit is equally likely to strike first. ${roundRule} ${sixes} ${failures}`;
+function matchupInitiativeText() {
+  return "Both possible first activations are weighted equally. The first striker attacks a target that has not activated and gains +1 die; the reply does not. Every natural 6 adds another die against the same target number, and additional 6s repeat the process.";
 }
 
 function matchupTitle(matchup) {
-  const positionalText = matchup.mode === "battlefield" && matchup.combatModifier
-    ? ` Positional modifier: ${matchup.a.name} ${signedModifier(matchup.combatAdjustmentA)} STR, ${matchup.b.name} ${signedModifier(matchup.combatAdjustmentB)} STR.`
-    : "";
-  const chargeText = matchup.mode === "combat"
-    ? ` Opening outcomes: ${matchup.a.name} charging ${Math.round(matchup.chanceAWhenACharges * 100)}%; ${matchup.b.name} charging ${Math.round(matchup.chanceAWhenBCharges * 100)}% for ${matchup.a.name}.`
-    : "";
-  const hitRule = matchup.explodingSixes ? " with exploding 6s" : "";
-  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${positionalText}${chargeText} ${matchup.a.name}: ${matchupStrikeText(matchup.a, matchup.effectiveStrikeA, matchup.drillAdjustmentA, matchup.combatAdjustmentA, matchup.modifierAdjustmentA ?? matchup.attackBonusA)} hitting on ${hitTarget(matchup.a, matchup.b)}, ${matchup.expectedHitsA.toFixed(2)} expected hits per attack${hitRule} and ${formatMetric(matchup.soloTurnsA)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpA)} HP remaining. ${matchup.b.name}: ${matchupStrikeText(matchup.b, matchup.effectiveStrikeB, matchup.drillAdjustmentB, matchup.combatAdjustmentB, matchup.modifierAdjustmentB ?? matchup.attackBonusB)} hitting on ${hitTarget(matchup.b, matchup.a)}, ${matchup.expectedHitsB.toFixed(2)} expected hits per attack${hitRule} and ${formatMetric(matchup.soloTurnsB)} uninterrupted rounds to kill. When it wins: ${formatMetric(matchup.victoryHpB)} HP remaining. ${matchupInitiativeText(matchup)}`;
+  const openingText = ` Opening outcomes: ${matchup.a.name} first ${Math.round(matchup.chanceAWhenFirst * 100)}%; ${matchup.b.name} first ${Math.round(matchup.chanceAWhenSecond * 100)}% for ${matchup.a.name}.`;
+  const attackText = (side, opponent, suffix) => `${side.name}: ${matchupStrikeText(side, matchup[`effectiveStrike${suffix}`], matchup[`heightAdjustment${suffix}`], matchup[`outflankAdjustment${suffix}`], matchup[`evasionAdjustment${suffix}`])}, or ${matchup[`effectiveStrike${suffix}`] + matchup.firstStrikeBonus} dice with First Strike, hitting on ${hitTarget(side, opponent)}, ${matchup[`expectedHits${suffix}`].toFixed(2)} expected strain per ordinary attack with Critical Hits and ${formatMetric(matchup[`soloTurns${suffix}`])} uninterrupted rounds to defeat the target. When it wins: ${formatMetric(matchup[`victoryHp${suffix}`])} HP remaining.`;
+  return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${openingText} ${attackText(matchup.a, matchup.b, "A")} ${attackText(matchup.b, matchup.a, "B")} ${matchupInitiativeText()}`;
 }
 
 function comparisonsFor(unit) {
@@ -1153,7 +997,6 @@ function loadNamedUnitSet(id) {
   }
   units = sanitiseUnits(saved.units);
   shownUnits = cloneUnits(units);
-  pruneMatrixAttackBonusIds();
   matchupOrders = {};
   matrixCustomOrder = units.map(unit => unit.id);
   matchupCache.clear();
@@ -1398,14 +1241,6 @@ function markMatrixDropRow(grid, rowId, insertAfter) {
   });
 }
 
-function toggleMatrixAttackBonus(unitId) {
-  const nextBonus = ((matrixAttackBonuses.get(unitId) || 0) + 1) % (MAX_MATRIX_ATTACK_BONUS + 1);
-  if (nextBonus) matrixAttackBonuses.set(unitId, nextBonus);
-  else matrixAttackBonuses.delete(unitId);
-  saveMatrixAttackBonuses();
-  renderMatrix();
-}
-
 function matrixScenarioById(id) {
   return COMBAT_SCENARIOS.find(scenario => scenario.id === id) || COMBAT_SCENARIOS[0];
 }
@@ -1413,7 +1248,7 @@ function matrixScenarioById(id) {
 function matrixScenarioMatchups(rowUnit, opponent) {
   return COMBAT_SCENARIOS.map(scenario => ({
     scenario,
-    matchup: getMatrixMatchup(rowUnit, opponent, scenario.modifier)
+    matchup: getMatrixMatchup(rowUnit, opponent, scenario)
   }));
 }
 
@@ -1427,11 +1262,11 @@ function formatPercentagePointDelta(value, digits = 0) {
   return `${rounded > 0 ? "+" : "−"}${Math.abs(rounded).toFixed(digits)}`;
 }
 
-function matrixEngagementLength(matrixUnits, combatModifier = 0) {
+function matrixEngagementLength(matrixUnits, scenario = COMBAT_SCENARIOS[0]) {
   const rounds = [];
   matrixUnits.forEach(rowUnit => {
     matrixUnits.forEach(opponent => {
-      const value = getMatrixMatchup(rowUnit, opponent, combatModifier).battleRounds;
+      const value = getMatrixMatchup(rowUnit, opponent, scenario).battleRounds;
       if (Number.isFinite(value)) rounds.push(value);
     });
   });
@@ -1447,16 +1282,6 @@ function matrixEngagementLength(matrixUnits, combatModifier = 0) {
     maximum: rounds.at(-1),
     count: rounds.length
   };
-}
-
-function battlefieldBreakdownText(matchup) {
-  if (matchup.mode !== "battlefield" || !Array.isArray(matchup.openingStates)) return "";
-  const lines = matchup.openingStates.map(state => {
-    const probability = (state.probability * 100).toFixed(1);
-    const conditional = state.shareA === null ? "unavailable" : `${state.shareA.toFixed(1)}% row win`;
-    return `${state.label}: ${probability}% of openings · ${conditional}`;
-  });
-  return `\nWeighted opening breakdown:\n${lines.join("\n")}`;
 }
 
 function enableMatrixRowSorting(grid) {
@@ -1522,35 +1347,31 @@ function enableMatrixRowSorting(grid) {
 function renderMatrix() {
   const view = createElement("div", "matrix-view");
   const controls = createElement("div", "matrix-controls");
-  const ruleToolbar = createElement("div", "visual-toolbar matrix-toolbar ruleset-toolbar");
-  const ruleSetControl = createElement("div", "mini-switcher ruleset-switcher");
-  [
-    ["disruption", "Disruption"],
-    ["penalties", "Penalties"]
-  ].forEach(([value, label]) => {
-    const button = createElement("button", combatRuleSet === value ? "active" : "", label);
+  const situationToolbar = createElement("div", "visual-toolbar matrix-toolbar situation-toolbar");
+  const situationControl = createElement("div", "mini-switcher situation-switcher");
+  [{ id: "compare", label: "Compare", description: "Show all four situations in every cell" }, ...COMBAT_SCENARIOS]
+    .forEach(scenario => {
+    const button = createElement("button", matrixScenario === scenario.id ? "active" : "", scenario.label);
     button.type = "button";
-    button.setAttribute("aria-pressed", String(combatRuleSet === value));
-    button.title = value === "disruption"
-      ? "Wounds caused earlier in a round remove dice from the second strike"
-      : "Wounds do not remove reply dice; each modifier die gives one unit +1 and its opponent -1";
+    button.setAttribute("aria-pressed", String(matrixScenario === scenario.id));
+    button.title = scenario.description;
     button.addEventListener("click", () => {
-      if (combatRuleSet === value) return;
-      combatRuleSet = value;
-      saveCombatRuleSet();
-      renderResults();
+      if (matrixScenario === scenario.id) return;
+      matrixScenario = scenario.id;
+      saveMatrixScenario();
+      renderMatrix();
     });
-    ruleSetControl.append(button);
+    situationControl.append(button);
   });
-  ruleToolbar.append(
-    createElement("span", "visual-toolbar-label", "Combat rules"),
-    ruleSetControl,
+  situationToolbar.append(
+    createElement("span", "visual-toolbar-label", "Situation"),
+    situationControl,
     createElement(
       "span",
       "visual-toolbar-note",
-      combatRuleSet === "penalties"
-        ? "No wound penalty · selected modifier is +N/−N"
-        : "Earlier wounds reduce the reply · selected modifier is +N"
+      matrixScenario === "compare"
+        ? "Row perspective · height and outflanking each apply once"
+        : matrixScenarioById(matrixScenario).description
     )
   );
   const toolbar = createElement("div", "visual-toolbar matrix-toolbar");
@@ -1586,20 +1407,21 @@ function renderMatrix() {
         : "Cell: overall win % · expected rounds"
     )
   );
-  controls.append(ruleToolbar, toolbar);
+  controls.append(situationToolbar, toolbar);
 
-  const currentStrengthEntries = strengthEntries(getMatrixMatchup);
+  const comparesPositionScenarios = matrixScenario === "compare";
+  const activeScenario = comparesPositionScenarios
+    ? COMBAT_SCENARIOS[0]
+    : matrixScenarioById(matrixScenario);
+  const scenarioResolver = (unit, opponent) => getMatrixMatchup(unit, opponent, activeScenario);
+  const currentStrengthEntries = strengthEntries(scenarioResolver);
   const matrixUnits = matrixUnitOrder(currentStrengthEntries);
-  const usesPositionScenarios = matrixMode === "battlefield";
-  const comparesPositionScenarios = usesPositionScenarios && matrixScenario === "compare";
-  const activeScenario = comparesPositionScenarios ? COMBAT_SCENARIOS[0] : matrixScenarioById(matrixScenario);
-  const activeModifier = usesPositionScenarios ? activeScenario.modifier : 0;
   const strengths = new Map(currentStrengthEntries.map(entry => [entry.unit.id, entry.average]));
   const currentRanks = new Map(sortedStrengthEntries(currentStrengthEntries)
     .map((entry, index) => [entry.unit.id, index + 1]));
-  const baselineStrengthEntries = matrixAttackBonuses.size
-    ? strengthEntries((unit, opponent) => getMatchup(unit, opponent, 0, matrixMode, 0, 0))
-    : currentStrengthEntries;
+  const baselineStrengthEntries = activeScenario.id === "neutral"
+    ? currentStrengthEntries
+    : strengthEntries((unit, opponent) => getMatrixMatchup(unit, opponent, COMBAT_SCENARIOS[0]));
   const baselineRanks = new Map(sortedStrengthEntries(baselineStrengthEntries)
     .map((entry, index) => [entry.unit.id, index + 1]));
   const rankChanges = matrixUnits.map(unit => ({
@@ -1609,7 +1431,7 @@ function renderMatrix() {
     .sort((a, b) => Math.abs(b.movement) - Math.abs(a.movement));
 
   const impact = createElement("div", "matrix-impact");
-  const length = matrixEngagementLength(matrixUnits, activeModifier);
+  const length = matrixEngagementLength(matrixUnits, activeScenario);
   const lengthItem = createElement("div", "matrix-impact-item");
   lengthItem.title = `Uniform average across all ${length.count} row/column pairings, including mirror matches. The median and range compare each pairing's own expected duration.`;
   lengthItem.append(
@@ -1623,24 +1445,24 @@ function renderMatrix() {
   );
   impact.append(lengthItem);
   const rankItem = createElement("div", "matrix-impact-item");
-  const rankDetail = matrixAttackBonuses.size
+  const rankDetail = activeScenario.id !== "neutral"
     ? rankChanges.length
       ? rankChanges.map(({ unit, movement }) =>
         `${unit.name} ${movement > 0 ? "↑" : "↓"}${Math.abs(movement)}`
       ).join(" · ")
-      : "Selected modifiers change matchup scores, but not the current rank order."
-    : "Set +1 to +4 beside a unit to compare its modified rank with the neutral ranking.";
+      : `${activeScenario.label} changes matchup scores, but not the rank order.`
+    : "Select a positional situation to compare its ranking with Neutral.";
   rankItem.title = rankDetail;
   rankItem.append(
-    createElement("span", "matrix-impact-name", "Modifier ranking"),
+    createElement("span", "matrix-impact-name", "Situation ranking"),
     createElement(
       "strong",
       "",
-      matrixAttackBonuses.size
+      activeScenario.id !== "neutral"
         ? rankChanges.length
           ? `${rankChanges.length} moved`
           : "Order unchanged"
-        : "No modifiers"
+        : "Neutral baseline"
     ),
     createElement("span", "matrix-impact-detail", rankDetail)
   );
@@ -1652,7 +1474,7 @@ function renderMatrix() {
   grid.style.setProperty("--unit-total", matrixUnits.length);
   grid.classList.toggle("dense", matrixUnits.length > 8);
   grid.classList.toggle("comparison", comparesPositionScenarios);
-  grid.classList.toggle("combat", matrixMode === "combat");
+  grid.classList.toggle("combat", !comparesPositionScenarios);
   grid.append(createElement("div", "matrix-corner", "Rank · avg win %"));
 
   matrixUnits.forEach(unit => {
@@ -1674,27 +1496,6 @@ function renderMatrix() {
       rowHead.append(dragHandle);
     }
     rowHead.append(createUnitHeading(rowUnit));
-    if (matrixMode === "combat") {
-      const attackBonus = matrixAttackBonuses.get(rowUnit.id) || 0;
-      const nextBonus = (attackBonus + 1) % (MAX_MATRIX_ATTACK_BONUS + 1);
-      const bonus = createElement(
-        "button",
-        `matrix-row-bonus${attackBonus ? " active" : ""}`,
-        attackBonus ? `+${attackBonus}` : "+0"
-      );
-      bonus.type = "button";
-      bonus.dataset.bonus = String(attackBonus);
-      bonus.setAttribute(
-        "aria-label",
-        `${rowUnit.name} currently has ${attackBonus ? `+${attackBonus}` : "no"} modifier dice; click to set ${nextBonus ? `+${nextBonus}` : "no modifier"}`
-      );
-      const ruleEffect = combatRuleSet === "penalties"
-        ? `Its attack pool gains ${attackBonus} and each opponent's loses ${attackBonus}.`
-        : `Its attack pool gains ${attackBonus}.`;
-      bonus.title = `${rowUnit.name}: ${attackBonus ? `+${attackBonus}` : "no"} modifier dice. ${attackBonus ? ruleEffect : ""} Click for ${nextBonus ? `+${nextBonus}` : "no modifier"}.`;
-      bonus.addEventListener("click", () => toggleMatrixAttackBonus(rowUnit.id));
-      rowHead.append(bonus);
-    }
     const rank = currentRanks.get(rowUnit.id);
     const baselineRank = baselineRanks.get(rowUnit.id);
     const movement = baselineRank - rank;
@@ -1708,8 +1509,8 @@ function renderMatrix() {
     grid.append(rowHead);
 
     matrixUnits.forEach(opponent => {
-      const neutral = getMatrixMatchup(rowUnit, opponent);
-      const matchup = getMatrixMatchup(rowUnit, opponent, activeModifier);
+      const neutral = getMatrixMatchup(rowUnit, opponent, COMBAT_SCENARIOS[0]);
+      const matchup = getMatrixMatchup(rowUnit, opponent, activeScenario);
       const cell = createElement("div", "matrix-cell");
       cell.dataset.matrixRowId = rowUnit.id;
       if (comparesPositionScenarios) {
@@ -1719,11 +1520,11 @@ function renderMatrix() {
           const delta = scenarioMatchup.shareA - neutral.shareA;
           const flip = outcomeChanged(neutral, scenarioMatchup);
           if (flip) scenarioResult.classList.add("outcome-flip");
-          scenarioResult.title = `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance${scenario.modifier ? ` (${formatPercentagePointDelta(delta)} pp vs Neutral)` : ""}`;
+          scenarioResult.title = `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance${scenario.id !== "neutral" ? ` (${formatPercentagePointDelta(delta)} pp vs Neutral)` : ""}`;
           scenarioResult.append(
             createElement("i", "", scenario.shortLabel),
             createElement("strong", "", `${Math.round(scenarioMatchup.shareA)}%`),
-            scenario.modifier
+            scenario.id !== "neutral"
               ? createElement("em", "", formatPercentagePointDelta(delta))
               : createElement("em", "neutral-marker", "base")
           );
@@ -1738,13 +1539,11 @@ function renderMatrix() {
           createElement("strong", "matrix-cell-chance", `${Math.round(matchup.shareA)}%`),
           createElement("span", "matrix-cell-rounds", `◷ ${formatMetric(matchup.battleRounds)}r`)
         ];
-        if (matrixMode !== "combat") {
+        if (activeScenario.id !== "neutral") {
           readout.push(createElement(
             "span",
             `matrix-cell-delta${flip ? " winner-flip" : ""}`,
-            activeModifier
-              ? `${formatPercentagePointDelta(delta)} pp${flip ? " · flip" : ""}`
-              : "baseline"
+            `${formatPercentagePointDelta(delta)} pp${flip ? " · flip" : ""}`
           ));
         }
         cell.append(...readout);
@@ -1754,9 +1553,9 @@ function renderMatrix() {
       cell.style.color = colour.foreground;
       cell.title = comparesPositionScenarios
         ? matrixScenarioMatchups(rowUnit, opponent)
-          .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}${battlefieldBreakdownText(scenarioMatchup)}`)
+          .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)}% row win chance. ${matchupTitle(scenarioMatchup)}`)
           .join("\n")
-        : `${matrixMode === "combat" ? "Overall" : activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeModifier ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}${battlefieldBreakdownText(matchup)}`;
+        : `${activeScenario.label}: ${Math.round(matchup.shareA)}% row win chance${activeScenario.id !== "neutral" ? ` (${formatPercentagePointDelta(matchup.shareA - neutral.shareA)} percentage points vs Neutral)` : ""}. ${matchupTitle(matchup)}`;
       cell.setAttribute("role", "img");
       cell.setAttribute(
         "aria-label",
@@ -1764,7 +1563,7 @@ function renderMatrix() {
           ? `${rowUnit.name} versus ${opponent.name}. ${matrixScenarioMatchups(rowUnit, opponent)
             .map(({ scenario, matchup: scenarioMatchup }) => `${scenario.label}: ${Math.round(scenarioMatchup.shareA)} percent`)
             .join(". ")}`
-          : `${matrixMode === "combat" ? "Overall" : activeScenario.label}: ${rowUnit.name} has a ${Math.round(matchup.shareA)} percent chance to beat ${opponent.name}`
+          : `${activeScenario.label}: ${rowUnit.name} has a ${Math.round(matchup.shareA)} percent chance to beat ${opponent.name}`
       );
       grid.append(cell);
     });
@@ -1992,14 +1791,14 @@ function renderSimilarity() {
   resultStage.replaceChildren(view);
 }
 
-function matchupPairsAtMode(mode) {
+function matchupPairsForScenario(scenario) {
   const pairs = [];
   for (let first = 0; first < shownUnits.length; first += 1) {
     for (let second = first + 1; second < shownUnits.length; second += 1) {
       pairs.push({
         a: shownUnits[first],
         b: shownUnits[second],
-        shareA: getMatchup(shownUnits[first], shownUnits[second], 0, mode).shareA
+        shareA: getMatchup(shownUnits[first], shownUnits[second], scenario).shareA
       });
     }
   }
@@ -2103,9 +1902,9 @@ function renderHealth() {
         ? "good"
         : "risk";
 
-  const battlefieldSensitivity = ruleSensitivity(
-    matchupPairsAtMode("combat"),
-    matchupPairsAtMode("battlefield")
+  const positionalSensitivity = ruleSensitivity(
+    matchupPairsForScenario(COMBAT_SCENARIOS[0]),
+    matchupPairsForScenario(COMBAT_SCENARIOS.at(-1))
   );
 
   const metrics = createElement("div", "health-metrics");
@@ -2210,11 +2009,11 @@ function renderHealth() {
   const sensitivityHeading = createElement("div", "health-panel-heading");
   sensitivityHeading.append(
     createElement("strong", "", "Model sensitivity"),
-    createElement("span", "", "Charge-and-disruption outcomes compared with the current battlefield assumptions")
+    createElement("span", "", "Neutral outcomes compared with the row higher + outflanking situation")
   );
   const sensitivityList = createElement("div", "health-sensitivity-list");
   [
-    ["Battlefield estimate", battlefieldSensitivity]
+    ["Position impact", positionalSensitivity]
   ].forEach(([label, sensitivity]) => {
     const row = createElement("div", "health-sensitivity-row");
     const details = createElement("div", "health-sensitivity-details");
@@ -2348,8 +2147,7 @@ function generatorRosterMetrics(roster) {
   const metrics = calculateGeneratorMetrics(
     roster,
     generatorConfig.settings,
-    generatorConfig.objectives,
-    { explodingSixes, criticalFail }
+    generatorConfig.objectives
   );
   let changeTotal = 0;
   let changeParts = 0;
@@ -2603,7 +2401,7 @@ function renderGenerator() {
     ["advantageRankTarget", "+1 target rank gain", "Average places gained by non-leading units after receiving +1 attack die.", .25, 5, .25, "places"],
     ["engagementTarget", "Average engagement", "Desired average length across all pairings, including mirrors.", 1.5, 8, .25, "rounds"],
     ["engagementTolerance", "Length tolerance", "How far engagement length may drift before its score falls sharply.", .1, 2, .1, "± rounds"],
-    ["mobilityTaxTarget", "Speed/Drill power tax", "Desired base win-rate decline per combined Speed or Drill point.", .1, 5, .1, "pp/stat"],
+    ["mobilityTaxTarget", "Mobility/Drill power tax", "Desired base win-rate decline per combined Mobility or Drill point.", .1, 5, .1, "pp/stat"],
     ["apDiceGapTarget", "AP attack-die gap", "How many fewer attack dice an AP unit should have than its closest non-AP peer.", .5, 6, .5, "dice"],
     ["candidateCount", "Candidate rosters", "How many of the best alternatives to keep.", 3, 12, 1, ""]
   ].forEach(([id, label, description, min, max, step, suffix]) => {
@@ -3156,7 +2954,7 @@ function renderResults() {
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
-      ? `${shownUnits.length} units · ${matrixMatchupCount} matchups · ${combatRuleSet === "penalties" ? "Penalties" : "Disruption"} rules`
+      ? `${shownUnits.length} units · ${matrixMatchupCount} matchups · First Strike + Critical Hits`
       : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
   outcomeKey.hidden = activeView !== "bars";
 
@@ -3218,7 +3016,7 @@ unitGrid.addEventListener("input", event => {
   const unit = units.find(item => item.id === card.dataset.id);
   if (!unit) return;
 
-  if (field === "ap") unit.ap = target.checked;
+  if (["ap", "shooting"].includes(field)) unit[field] = target.checked;
   else if (["strike", "drill", "speed", "defense"].includes(field)) unit[field] = target.value;
   else unit[field] = target.value;
 
@@ -3228,11 +3026,11 @@ unitGrid.addEventListener("input", event => {
 });
 
 unitGrid.addEventListener("change", event => {
-  if (event.target.dataset.field === "ap") {
+  if (["ap", "shooting"].includes(event.target.dataset.field)) {
     const card = event.target.closest(".unit-card");
     const unit = units.find(item => item.id === card?.dataset.id);
     if (unit) {
-      unit.ap = event.target.checked;
+      unit[event.target.dataset.field] = event.target.checked;
       saveUnits();
       updateResults();
     }
@@ -3252,13 +3050,11 @@ unitGrid.addEventListener("click", event => {
     }
   });
   matrixCustomOrder = matrixCustomOrder.filter(id => id !== removedId);
-  matrixAttackBonuses.delete(removedId);
   delete generatorConfig.units[removedId];
   deleteCookieValue(`${GENERATOR_UNIT_COOKIE_PREFIX}${removedId}`);
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
-  saveMatrixAttackBonuses();
   saveGeneratorConfig();
   renderEditor();
   updateResults(true);
@@ -3274,6 +3070,7 @@ addUnitButton.addEventListener("click", () => {
     strike: 5,
     drill: 0,
     speed: 0,
+    shooting: false,
     ap: false,
     defense: 4,
     hp: 7,
@@ -3292,12 +3089,10 @@ resetButton.addEventListener("click", () => {
   shownUnits = cloneUnits(DEFAULT_UNITS);
   matchupOrders = {};
   matrixCustomOrder = DEFAULT_UNITS.map(unit => unit.id);
-  matrixAttackBonuses = new Map();
   matchupCache.clear();
   saveUnits();
   saveMatchupOrders();
   saveMatrixCustomOrder();
-  saveMatrixAttackBonuses();
   syncGeneratorConfigToUnits();
   renderEditor();
   renderResults();
@@ -3315,22 +3110,6 @@ viewButtons.forEach(button => {
 generatorButton.addEventListener("click", () => {
   activeView = "generator";
   localStorage.setItem(VIEW_KEY, activeView);
-  renderResults();
-});
-
-explodingSixesToggle.checked = explodingSixes;
-explodingSixesToggle.addEventListener("change", () => {
-  explodingSixes = explodingSixesToggle.checked;
-  saveExplodingSixes();
-  matchupCache.clear();
-  renderResults();
-});
-
-criticalFailToggle.checked = criticalFail;
-criticalFailToggle.addEventListener("change", () => {
-  criticalFail = criticalFailToggle.checked;
-  saveCriticalFail();
-  matchupCache.clear();
   renderResults();
 });
 

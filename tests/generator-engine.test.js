@@ -10,6 +10,7 @@ const unit = (name, overrides = {}) => ({
   defense: 4,
   speed: 0,
   drill: 0,
+  shooting: false,
   ap: false,
   hp: 7,
   ...overrides
@@ -38,7 +39,7 @@ test("generator matchup estimates remain complementary", () => {
     unit("B", { strike: 3, defense: 6 }),
     unit("C", { strike: 4, ap: true })
   ];
-  const matrix = generatorShareMatrix(roster, { explodingSixes: true });
+  const matrix = generatorShareMatrix(roster);
   matrix.forEach((row, first) => row.forEach((share, second) => {
     assert.ok(Math.abs(share + matrix[second][first] - 100) < 1e-9);
   }));
@@ -51,10 +52,7 @@ test("generator reports all five requested balancing measurements", () => {
     unit("Mobile", { strike: 3, speed: 3, drill: 2 }),
     unit("AP", { strike: 2, speed: 3, drill: 2, ap: true })
   ];
-  const metrics = generatorRosterMetrics(roster, settings, weights, {
-    explodingSixes: true,
-    criticalFail: false
-  });
+  const metrics = generatorRosterMetrics(roster, settings, weights);
   assert.ok(metrics.roleSeparation > 0);
   assert.ok(metrics.advantageWinDelta > 0);
   assert.ok(metrics.engagementRounds > 0);
@@ -69,4 +67,13 @@ test("lower attack pools produce longer estimated engagements", () => {
   const quickMetrics = generatorRosterMetrics(quick, settings, weights);
   const slowMetrics = generatorRosterMetrics(slow, settings, weights);
   assert.ok(slowMetrics.engagementRounds > quickMetrics.engagementRounds);
+});
+
+test("generator estimates include shooting evasion at Mobility 3", () => {
+  const shooter = unit("Shooter", { shooting: true });
+  const slowTarget = unit("Target", { speed: 2 });
+  const evasiveTarget = unit("Target", { speed: 3 });
+  const intoSlow = generatorShareMatrix([shooter, slowTarget])[0][1];
+  const intoEvasive = generatorShareMatrix([shooter, evasiveTarget])[0][1];
+  assert.ok(intoEvasive < intoSlow);
 });

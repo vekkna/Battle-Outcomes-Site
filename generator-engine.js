@@ -5,27 +5,25 @@ const mean = values => values.length
   : 0;
 
 function hitChance(attacker, defender) {
-  return attacker.ap ? 4 / 6 : (7 - defender.defense) / 6;
+  const target = attacker.ap ? Math.min(defender.defense, 3) : defender.defense;
+  return (7 - target) / 6;
 }
 
-function diceMultiplier(rules) {
-  return rules.explodingSixes === false ? 1 : 1.2;
+function evasionModifier(attacker, defender) {
+  return attacker.shooting && defender.speed >= 3 ? -2 : 0;
 }
 
-function expectedDamage(attacker, defender, attackerDice, defenderDice, rules) {
-  const multiplier = diceMultiplier(rules);
-  const normal = Math.max(1, attackerDice) * hitChance(attacker, defender) * multiplier;
-  if (!rules.criticalFail) return normal;
-  const defenderRolls = Math.max(1, defenderDice) * multiplier;
-  const retaliationDice = defenderRolls / 6;
-  return normal + retaliationDice * hitChance(attacker, defender) * multiplier;
+function expectedDamage(attacker, defender, attackerDice) {
+  const finalPool = Math.max(0, attackerDice + evasionModifier(attacker, defender));
+  const averageFirstStrikePool = finalPool + 0.5;
+  return averageFirstStrikePool * hitChance(attacker, defender) * 1.2;
 }
 
-function matchupEstimate(a, b, bonusA, bonusB, rules) {
-  const diceA = Math.max(1, a.strike + bonusA);
-  const diceB = Math.max(1, b.strike + bonusB);
-  const damageA = Math.max(.001, expectedDamage(a, b, diceA, diceB, rules));
-  const damageB = Math.max(.001, expectedDamage(b, a, diceB, diceA, rules));
+function matchupEstimate(a, b, bonusA, bonusB) {
+  const diceA = Math.max(0, a.strike + bonusA);
+  const diceB = Math.max(0, b.strike + bonusB);
+  const damageA = Math.max(.001, expectedDamage(a, b, diceA));
+  const damageB = Math.max(.001, expectedDamage(b, a, diceB));
   const roundsToKillA = b.hp / damageA;
   const roundsToKillB = a.hp / damageB;
   const advantage = Math.log(Math.max(.001, roundsToKillB) / Math.max(.001, roundsToKillA));
@@ -38,12 +36,12 @@ function matchupEstimate(a, b, bonusA, bonusB, rules) {
   return { shareA, engagementRounds: clamp(engagementRounds, .5, 20) };
 }
 
-export function generatorShareMatrix(roster, rules = {}) {
+export function generatorShareMatrix(roster) {
   const matrix = Array.from({ length: roster.length }, () => new Float64Array(roster.length));
   for (let first = 0; first < roster.length; first += 1) {
     matrix[first][first] = 50;
     for (let second = first + 1; second < roster.length; second += 1) {
-      const share = matchupEstimate(roster[first], roster[second], 0, 0, rules).shareA;
+      const share = matchupEstimate(roster[first], roster[second], 0, 0).shareA;
       matrix[first][second] = share;
       matrix[second][first] = 100 - share;
     }
@@ -97,7 +95,7 @@ function specializationMetrics(matrix, averages) {
   };
 }
 
-function advantageMetrics(roster, matrix, averages, rules) {
+function advantageMetrics(roster, matrix, averages) {
   if (roster.length < 2) return { advantageRankGain: 0, advantageWinDelta: 0 };
   const baseRanks = ranks(averages);
   const rankGains = [];
@@ -105,7 +103,7 @@ function advantageMetrics(roster, matrix, averages, rules) {
   roster.forEach((unit, index) => {
     const boostedResults = roster.map((opponent, opponentIndex) => opponentIndex === index
       ? 50
-      : matchupEstimate(unit, opponent, 1, 0, rules).shareA);
+      : matchupEstimate(unit, opponent, 1, 0).shareA);
     const boostedAverage = mean(boostedResults.filter((_, opponent) => opponent !== index));
     winDeltas.push(boostedAverage - averages[index]);
     if (baseRanks[index] > 1) {
@@ -120,10 +118,10 @@ function advantageMetrics(roster, matrix, averages, rules) {
   };
 }
 
-function engagementLength(roster, rules) {
+function engagementLength(roster) {
   const rounds = [];
   roster.forEach(a => roster.forEach(b => {
-    rounds.push(matchupEstimate(a, b, 0, 0, rules).engagementRounds);
+    rounds.push(matchupEstimate(a, b, 0, 0).engagementRounds);
   }));
   return mean(rounds);
 }
@@ -177,12 +175,12 @@ function scoreTowardsTarget(value, target, tolerance) {
   return Math.exp(-.5 * ((value - target) / Math.max(.01, tolerance)) ** 2);
 }
 
-export function generatorRosterMetrics(roster, settings, weights, rules = {}) {
-  const matrix = generatorShareMatrix(roster, rules);
+export function generatorRosterMetrics(roster, settings, weights) {
+  const matrix = generatorShareMatrix(roster);
   const averages = unitAverages(matrix);
   const specialization = specializationMetrics(matrix, averages);
-  const advantage = advantageMetrics(roster, matrix, averages, rules);
-  const engagementRounds = engagementLength(roster, rules);
+  const advantage = advantageMetrics(roster, matrix, averages);
+  const engagementRounds = engagementLength(roster);
   const mobility = mobilityMetrics(roster, averages);
   const ap = apMetrics(roster);
 
@@ -226,4 +224,3 @@ export function generatorRosterMetrics(roster, settings, weights, rules = {}) {
     components
   };
 }
-

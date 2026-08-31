@@ -448,6 +448,21 @@ h2 {
   background: var(--line-strong);
 }
 
+.fixed-rule-note {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 7px;
+  padding: 0 9px;
+  border: 1px solid #d7bd96;
+  border-radius: 8px;
+  background: #fff3dd;
+  color: #80521f;
+  font-size: 9px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
 .drill-rule-control,
 .speed-rule-control,
 .exploding-rule-control,
@@ -716,7 +731,7 @@ h2 {
 .stats-row {
   height: 30px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(30px, 1fr)) minmax(48px, .8fr);
+  grid-template-columns: repeat(4, minmax(30px, 1fr)) repeat(2, minmax(45px, .8fr));
   align-items: end;
   gap: 6px;
 }
@@ -769,7 +784,8 @@ h2 {
   color: #477c92;
 }
 
-.ap-control {
+.ap-control,
+.shooting-control {
   height: 27px;
   display: flex;
   align-items: center;
@@ -785,13 +801,15 @@ h2 {
   letter-spacing: .04em;
 }
 
-.ap-control input {
+.ap-control input,
+.shooting-control input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
 
-.ap-toggle {
+.ap-toggle,
+.shooting-toggle {
   position: relative;
   width: 21px;
   height: 12px;
@@ -800,7 +818,8 @@ h2 {
   transition: background .16s ease;
 }
 
-.ap-toggle::after {
+.ap-toggle::after,
+.shooting-toggle::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -813,16 +832,25 @@ h2 {
   transition: transform .16s ease;
 }
 
-.ap-control input:checked + .ap-toggle {
+.ap-control input:checked + .ap-toggle,
+.shooting-control input:checked + .shooting-toggle {
   background: var(--ink);
 }
 
-.ap-control input:checked + .ap-toggle::after {
+.ap-control input:checked + .ap-toggle::after,
+.shooting-control input:checked + .shooting-toggle::after {
   transform: translateX(9px);
 }
 
-.ap-control input:checked ~ span:last-child {
+.ap-control input:checked ~ span:last-child,
+.shooting-control input:checked ~ span:last-child {
   color: var(--ink);
+}
+
+.ap-control:focus-within,
+.shooting-control:focus-within {
+  outline: 2px solid #637a17;
+  outline-offset: 2px;
 }
 
 .results-panel {
@@ -1714,7 +1742,7 @@ h2 {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
   padding: 3px;
 }
