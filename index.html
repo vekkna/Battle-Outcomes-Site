@@ -61,6 +61,8 @@
             <span aria-hidden="true">+</span> Add unit
           </button>
         </div>
+        <label class="auto-rank-control"><input type="checkbox" id="autoRankCards" aria-describedby="autoRankHelp"> Automatically sort cards by rank</label>
+        <p class="scope-note" id="autoRankHelp">When enabled, cards follow the Balance ranking after edits, strongest first; ties keep their order. This also updates the intended order.</p>
         <p class="scope-note">Drag cards into intended strength order: strongest first, left to right then top to bottom. Strike benchmark: rout at 7 strain; minimum 1 attack die.</p>
         <div class="unit-grid" id="unitGrid"></div>
         <div id="modifierRules" class="modifier-rule-controls" aria-label="Combat modifier values"></div>
@@ -109,6 +111,10 @@
         <button class="remove-unit" type="button" data-action="remove" title="Remove unit" aria-label="Remove unit">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 4.5h9M6 2.5h4m-5.5 2 .6 9h5.8l.6-9M6.8 6.5v5m2.4-5v5"/></svg>
         </button>
+      </div>
+      <div class="unit-strength" title="Strength score: 1 + 99 × average win probability against the other units, weighted equally, using the Balance matchup rules. Scores are relative to this roster; score gaps are not head-to-head win probabilities.">
+        <span data-strength-rank></span>
+        <strong data-strength-score></strong>
       </div>
       <div class="stats-row">
         <label class="stat-control pace-control" title="Pace: forward movement distance in inches. Movement is not simulated in this strike benchmark."><span>PACE</span><input type="number" min="0" max="99" inputmode="numeric" data-field="pace" aria-label="Pace in inches"></label>

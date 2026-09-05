@@ -3415,6 +3415,11 @@ h2 {
 .ap-control { height: 32px; font-size: 12px; }
 .stat-control:focus-within { outline: 2px solid #637a17; outline-offset: 2px; }
 .scope-note { padding: 0 0 10px; }
+.auto-rank-control { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 14px; cursor: pointer; }
+.auto-rank-control input { accent-color: var(--accent, #64865a); }
+.unit-strength { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 8px 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.unit-strength > span:first-child { color: var(--muted); }
+.unit-strength strong { font-size: 15px; }
 .balance-metrics .health-metric { grid-template-columns: 1fr; gap: 8px; padding: 16px; }
 .balance-metrics .health-metric-label { font-size: 12px; }
 .balance-metrics .health-metric-value { font-size: 24px; }

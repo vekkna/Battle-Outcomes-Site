@@ -8,6 +8,7 @@ import { normaliseSituation, pairingSituation, modifierImpact } from "./modifier
 import { generatorRosterMetrics as calculateGeneratorMetrics } from "./generator-engine.js";
 
 const STORAGE_KEY = "matchup-board-units-v1";
+const AUTO_RANK_KEY = "matchup-board-auto-rank-v1";
 const STORAGE_COOKIE = "matchup-board-units-v1";
 const RECOVERY_KEY = "matchup-board-roster-recovered-2026-07-18";
 const VIEW_KEY = "matchup-board-view-v2";
@@ -69,6 +70,7 @@ const COMBAT_SCENARIOS = [
 ];
 
 const unitGrid = document.querySelector("#unitGrid");
+const autoRankCards = document.querySelector("#autoRankCards");
 const unitCount = document.querySelector("#unitCount");
 const addUnitButton = document.querySelector("#addUnitButton");
 const resetButton = document.querySelector("#resetButton");
@@ -92,6 +94,9 @@ const viewButtons = [...document.querySelectorAll(".view-button")];
 
 let unitLoadNeedsPersist = false;
 let units = loadUnits();
+let autoRankEnabled = false;
+try { autoRankEnabled = localStorage.getItem(AUTO_RANK_KEY) === "true"; } catch { /* Use the default when storage is unavailable. */ }
+autoRankCards.checked = autoRankEnabled;
 let shownUnits = cloneUnits(units);
 let activeView = loadView();
 let matrixSort = loadMatrixSort();
@@ -1036,6 +1041,40 @@ function updateResults(immediate = false) {
 
   if (immediate) commit();
   else updateTimer = window.setTimeout(commit, 140);
+}
+
+function sortEditorByRank(entries) {
+  if (!autoRankEnabled) return;
+  const ranks = new Map(entries.map(entry => [entry.unit.id, entry.rank]));
+  const sorted = [...units].sort((a, b) => ranks.get(a.id) - ranks.get(b.id));
+  if (sorted.every((unit, index) => unit.id === units[index].id)) return;
+  units = sorted;
+  shownUnits = sanitiseUnits(units);
+  // Move existing cards so editing state survives a change in rank.
+  const focused = document.activeElement;
+  const cards = new Map([...unitGrid.children].map(card => [card.dataset.id, card]));
+  units.forEach((unit, index) => {
+    const card = cards.get(unit.id);
+    if (!card) return;
+    if (unitGrid.children[index] !== card) unitGrid.insertBefore(card, unitGrid.children[index] || null);
+    const handle = card.querySelector('[data-action="drag"]');
+    handle.title = `Intended rank #${index + 1}. Drag to change the intended strength order.`;
+    handle.setAttribute("aria-label", `${unit.name}: intended rank ${index + 1}. Drag to reorder.`);
+  });
+  if (focused && unitGrid.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  saveUnits();
+}
+
+function updateCardScores(entries) {
+  const byId = new Map(entries.map(entry => [entry.unit.id, entry]));
+  for (const card of unitGrid.children) {
+    const entry = byId.get(card.dataset.id);
+    if (!entry) continue;
+    // Map the probability linearly onto the requested 1–100 scale.
+    const score = Math.round((1 + .99 * entry.average) * 10) / 10;
+    card.querySelector('[data-strength-rank]').textContent = `#${entry.rank}`;
+    card.querySelector('[data-strength-score]').textContent = `${score.toFixed(1)} / 100`;
+  }
 }
 
 function renderEditor() {
@@ -3416,6 +3455,9 @@ function renderProfile() {
 }
 
 function renderResults() {
+  const cardRanks = rankRoster(shownUnits, getMatchup);
+  sortEditorByRank(cardRanks);
+  updateCardScores(cardRanks);
   const matchupCount = shownUnits.length * (shownUnits.length - 1) / 2;
   const matrixMatchupCount = shownUnits.length * shownUnits.length;
   resultsPanel.classList.toggle("matrix-layout", activeView === "matrix");
@@ -3483,6 +3525,12 @@ document.addEventListener("keydown", event => {
     closeSetMenu();
     setsButton.focus();
   }
+});
+
+autoRankCards.addEventListener("change", () => {
+  autoRankEnabled = autoRankCards.checked;
+  try { localStorage.setItem(AUTO_RANK_KEY, String(autoRankEnabled)); } catch { /* Keep working for this session. */ }
+  updateResults(true);
 });
 
 unitGrid.addEventListener("input", event => {
@@ -3558,9 +3606,10 @@ addUnitButton.addEventListener("click", () => {
   });
   saveUnits();
   syncGeneratorConfigToUnits();
+  const addedUnitId = units.at(-1).id;
   renderEditor();
   updateResults(true);
-  unitGrid.lastElementChild?.querySelector('[data-field="name"]')?.select();
+  [...unitGrid.children].find(card => card.dataset.id === addedUnitId)?.querySelector('[data-field="name"]')?.select();
 });
 
 resetButton.addEventListener("click", () => {
