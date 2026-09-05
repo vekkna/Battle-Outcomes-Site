@@ -69,11 +69,20 @@ test("lower attack pools produce longer estimated engagements", () => {
   assert.ok(slowMetrics.engagementRounds > quickMetrics.engagementRounds);
 });
 
-test("generator estimates include shooting evasion at Mobility 3", () => {
+test("strike generator ignores the legacy shooting flag and evasion", () => {
   const shooter = unit("Shooter", { shooting: true });
   const slowTarget = unit("Target", { speed: 2 });
   const evasiveTarget = unit("Target", { speed: 3 });
   const intoSlow = generatorShareMatrix([shooter, slowTarget])[0][1];
   const intoEvasive = generatorShareMatrix([shooter, evasiveTarget])[0][1];
-  assert.ok(intoEvasive < intoSlow);
+  assert.equal(intoEvasive, intoSlow);
+});
+
+test("generator estimates use the selected Initiative magnitude", () => {
+  const roster = [unit("A", { strike: 2 }), unit("B", { strike: 6 })];
+  const without = generatorRosterMetrics(roster, settings, weights, { initiative: 0 });
+  const withBonus = generatorRosterMetrics(roster, settings, weights, { initiative: 3 });
+  assert.ok(withBonus.engagementRounds < without.engagementRounds);
+  assert.notEqual(withBonus.averages[0], without.averages[0]);
+  assert.deepEqual(generatorShareMatrix(roster, { height: 9, outflanking: 9 }), generatorShareMatrix(roster));
 });

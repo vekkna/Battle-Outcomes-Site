@@ -1,4 +1,8 @@
-export const FIRST_STRIKE_BONUS = 1;
+import { DEFAULT_MODIFIERS, normaliseModifiers } from "./combat-rules.js";
+
+export const INITIATIVE_BONUS = DEFAULT_MODIFIERS.initiative;
+// Compatibility with saved integrations using the former name.
+export const FIRST_STRIKE_BONUS = INITIATIVE_BONUS;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -9,10 +13,6 @@ export function attackTargetNumber(attacker, defender) {
 
 export function hitChance(attacker, defender) {
   return (7 - attackTargetNumber(attacker, defender)) / 6;
-}
-
-export function evasionModifier(attacker, defender) {
-  return attacker.shooting && Number(defender.speed) >= 3 ? -2 : 0;
 }
 
 /**
@@ -57,8 +57,8 @@ export function effectiveStrikes(a, b, combatModifier = 0) {
   const adjustmentA = Math.round(Number(combatModifier) || 0);
   const adjustmentB = -adjustmentA;
   return {
-    strikeA: Math.max(0, a.strike + adjustmentA),
-    strikeB: Math.max(0, b.strike + adjustmentB),
+    strikeA: Math.max(1, a.strike + adjustmentA),
+    strikeB: Math.max(1, b.strike + adjustmentB),
     adjustmentA,
     adjustmentB
   };
@@ -148,8 +148,8 @@ function finaliseMatchup(a, b, metrics, poolA, poolB, extras) {
     criticalHits: true,
     expectedHitsA: poolA * chanceA * criticalHitMultiplier,
     expectedHitsB: poolB * chanceB * criticalHitMultiplier,
-    expectedChargeHitsA: (poolA + FIRST_STRIKE_BONUS) * chanceA * criticalHitMultiplier,
-    expectedChargeHitsB: (poolB + FIRST_STRIKE_BONUS) * chanceB * criticalHitMultiplier,
+    expectedChargeHitsA: extras.initiativePoolA * chanceA * criticalHitMultiplier,
+    expectedChargeHitsB: extras.initiativePoolB * chanceB * criticalHitMultiplier,
     shareA,
     victoryTurnsA: chanceAOverall > Number.EPSILON
       ? metrics.weightedTurnsA / chanceAOverall
@@ -176,24 +176,34 @@ function finaliseMatchup(a, b, metrics, poolA, poolB, extras) {
 
 /**
  * Resolve a pairwise engagement. The first unit to activate each round gets
- * First Strike; the other unit replies without it. Either unit is equally
- * likely to activate first, including in the opening round.
+ * Initiative. This engine models striking only; legacy shooting flags are
+ * ignored. By default either
+ * unit is equally likely to activate first each round. This activation policy
+ * is a benchmark assumption, not a rule about Master Tactician bidding.
  */
 export function resolveRulesMatchup(a, b, options = {}) {
+  const modifiers = normaliseModifiers(options.modifiers);
   const heightAdvantage = clamp(Math.round(Number(options.heightAdvantage) || 0), -1, 1);
   const outflanker = options.outflanker === "a" || options.outflanker === "b"
     ? options.outflanker
     : null;
-  const heightAdjustmentA = heightAdvantage;
-  const heightAdjustmentB = -heightAdvantage;
-  const outflankAdjustmentA = outflanker === "a" ? 2 : outflanker === "b" ? -2 : 0;
+  const heightAdjustmentA = heightAdvantage * modifiers.height;
+  const heightAdjustmentB = -heightAdjustmentA;
+  const outflankAdjustmentA = outflanker === "a" ? modifiers.outflanking : outflanker === "b" ? -modifiers.outflanking : 0;
   const outflankAdjustmentB = -outflankAdjustmentA;
-  const evasionAdjustmentA = evasionModifier(a, b);
-  const evasionAdjustmentB = evasionModifier(b, a);
+  const evasionAdjustmentA = 0;
+  const evasionAdjustmentB = 0;
   const modifierAdjustmentA = heightAdjustmentA + outflankAdjustmentA + evasionAdjustmentA;
   const modifierAdjustmentB = heightAdjustmentB + outflankAdjustmentB + evasionAdjustmentB;
-  const poolA = Math.max(0, a.strike + modifierAdjustmentA);
-  const poolB = Math.max(0, b.strike + modifierAdjustmentB);
+  const rawPoolA = a.strike + modifierAdjustmentA;
+  const rawPoolB = b.strike + modifierAdjustmentB;
+  const poolA = Math.max(1, rawPoolA);
+  const poolB = Math.max(1, rawPoolB);
+  // Apply the minimum only AFTER every modifier, including Initiative.
+  const initiativePoolA = Math.max(1, rawPoolA + modifiers.initiative);
+  const initiativePoolB = Math.max(1, rawPoolB + modifiers.initiative);
+  const firstProbabilityA = Number.isFinite(options.firstProbabilityA)
+    ? clamp(options.firstProbabilityA, 0, 1) : 0.5;
   const chanceA = hitChance(a, b);
   const chanceB = hitChance(b, a);
   const distributionCache = new Map();
@@ -246,7 +256,7 @@ export function resolveRulesMatchup(a, b, options = {}) {
     if (cached) return cached;
     const firstIsA = first === "a";
     const second = firstIsA ? "b" : "a";
-    const firstPool = (firstIsA ? poolA : poolB) + FIRST_STRIKE_BONUS;
+    const firstPool = firstIsA ? initiativePoolA : initiativePoolB;
     const secondPool = firstIsA ? poolB : poolA;
     const firstOnly = {
       aActivations: firstIsA ? 1 : 0,
@@ -296,7 +306,7 @@ export function resolveRulesMatchup(a, b, options = {}) {
 
     ["a", "b"].forEach(first => {
       roundBranches(first, hpA, hpB).forEach(branch => {
-        const probability = 0.5 * branch.probability;
+        const probability = (first === "a" ? firstProbabilityA : 1 - firstProbabilityA) * branch.probability;
         if (branch.winner) {
           combineMetrics(
             aggregate,
@@ -349,12 +359,55 @@ export function resolveRulesMatchup(a, b, options = {}) {
   const aFirst = openingMetrics("a");
   const bFirst = openingMetrics("b");
   const overall = emptyMetrics();
-  combineMetrics(overall, aFirst, 0.5);
-  combineMetrics(overall, bFirst, 0.5);
+  combineMetrics(overall, aFirst, firstProbabilityA);
+  combineMetrics(overall, bFirst, 1 - firstProbabilityA);
+
+  // Exact finite-horizon distribution, with the remaining probability kept as
+  // an explicit tail. Only requested for the inspected pair, not every cell.
+  const duration = options.durationRounds ? (() => {
+    const horizon = clamp(Math.round(options.durationRounds), 1, 100);
+    let states = new Map([[`${a.hp}:${b.hp}`, { hpA: a.hp, hpB: b.hp, probability: 1 }]]);
+    const probabilities = [];
+    for (let round = 1; round <= horizon; round += 1) {
+      const next = new Map();
+      let ended = 0;
+      states.forEach(state => {
+        ["a", "b"].forEach(first => {
+          const orderProbability = first === "a" ? firstProbabilityA : 1 - firstProbabilityA;
+          roundBranches(first, state.hpA, state.hpB).forEach(branch => {
+            const probability = state.probability * orderProbability * branch.probability;
+            if (branch.winner) ended += probability;
+            else {
+              const key = `${branch.hpA}:${branch.hpB}`;
+              const entry = next.get(key) || { hpA: branch.hpA, hpB: branch.hpB, probability: 0 };
+              entry.probability += probability;
+              next.set(key, entry);
+            }
+          });
+        });
+      });
+      probabilities.push(ended);
+      states = next;
+    }
+    const tail = [...states.values()].reduce((sum, state) => sum + state.probability, 0);
+    const quantile = target => {
+      let cumulative = 0;
+      const index = probabilities.findIndex(probability => {
+        cumulative += probability;
+        return cumulative >= target - 1e-12;
+      });
+      return index < 0 ? null : index + 1;
+    };
+    return { probabilities, tail, horizon, median: quantile(.5), p90: quantile(.9) };
+  })() : null;
 
   return finaliseMatchup(a, b, overall, poolA, poolB, {
     modifierAdjustmentA,
     modifierAdjustmentB,
+    initiativePoolA,
+    initiativePoolB,
+    firstProbabilityA,
+    duration,
     heightAdvantage,
     heightAdjustmentA,
     heightAdjustmentB,
@@ -364,10 +417,11 @@ export function resolveRulesMatchup(a, b, options = {}) {
     evasionAdjustmentA,
     evasionAdjustmentB,
     scenarioId: String(options.scenarioId || "neutral"),
-    firstStrikeBonus: FIRST_STRIKE_BONUS,
+    modifiers,
+    firstStrikeBonus: modifiers.initiative,
     chargeBonus: 0,
-    chargeProbabilityA: 0.5,
-    chargeProbabilityB: 0.5,
+    chargeProbabilityA: firstProbabilityA,
+    chargeProbabilityB: 1 - firstProbabilityA,
     chanceAWhenFirst: aFirst.chanceA,
     chanceAWhenSecond: bFirst.chanceA,
     chanceAWhenACharges: aFirst.chanceA,
@@ -377,14 +431,14 @@ export function resolveRulesMatchup(a, b, options = {}) {
       {
         id: "a-charges",
         charger: "a",
-        probability: 0.5,
+        probability: firstProbabilityA,
         shareA: aFirst.chanceA * 100,
         battleRounds: aFirst.battleRounds
       },
       {
         id: "b-charges",
         charger: "b",
-        probability: 0.5,
+        probability: 1 - firstProbabilityA,
         shareA: bFirst.chanceA * 100,
         battleRounds: bFirst.battleRounds
       }

@@ -1,7 +1,10 @@
+import { DEFAULT_MODIFIERS, normaliseModifiers } from "./combat-rules.js";
 import {
   attackTargetNumber,
   resolveRulesMatchup
 } from "./combat-engine.js";
+import { rankRoster, compareProfiles, targetInversions, sameRoster } from "./balance-engine.js";
+import { normaliseSituation, pairingSituation, modifierImpact } from "./modifier-engine.js";
 import { generatorRosterMetrics as calculateGeneratorMetrics } from "./generator-engine.js";
 
 const STORAGE_KEY = "matchup-board-units-v1";
@@ -48,21 +51,20 @@ const GENERATOR_OBJECTIVES = [
   { id: "diversity", name: "Unit diversity", description: "Spread out centred specialization profiles and create varied strengths and weaknesses." },
   { id: "advantageImpact", name: "+1 advantage impact", description: "Make one extra attack die move units meaningfully up the Strength ranking." },
   { id: "engagementLength", name: "Engagement length", description: "Keep the roster's average engagement close to your target number of rounds." },
-  { id: "mobilityTax", name: "Mobility and Drill tax", description: "Make high-mobility, high-drill units weaker in the base combat ranking." },
+  { id: "mobilityTax", name: "Mobility tax", description: "Make high-mobility units weaker in the base combat ranking." },
   { id: "apTax", name: "AP attack-die tax", description: "Give AP units fewer attack dice than otherwise similar non-AP units." }
 ];
 
 const GENERATOR_STATS = [
   { id: "speed", label: "MOB", name: "Mobility", min: 0, max: 99 },
-  { id: "drill", label: "DRL", name: "Drill", min: 0, max: 99 },
-  { id: "strike", label: "STR", name: "Strength", min: 1, max: 99 },
+  { id: "strike", label: "MEL", name: "Melee", min: 1, max: 99 },
   { id: "defense", label: "DEF", name: "Defence", min: 1, max: 6 }
 ];
 
 const COMBAT_SCENARIOS = [
   { id: "neutral", label: "Neutral", shortLabel: "N", heightAdvantage: 0, outflanker: null, description: "No height or outflanking modifier" },
-  { id: "higher", label: "Row higher", shortLabel: "H", heightAdvantage: 1, outflanker: null, description: "Row attacker +1; column attacker −1" },
-  { id: "outflanking", label: "Column outflanked", shortLabel: "O", heightAdvantage: 0, outflanker: "a", description: "Column target is outflanked: row +2, column −2; applies once regardless of flankers" },
+  { id: "higher", label: "Row higher", shortLabel: "H", heightAdvantage: 1, outflanker: null, get description() { return `Row attacker +${modifierRules.height}; column attacker −${modifierRules.height}`; } },
+  { id: "outflanking", label: "Column outflanked", shortLabel: "O", heightAdvantage: 0, outflanker: "a", get description() { return `Column target is outflanked: row +${modifierRules.outflanking}, column −${modifierRules.outflanking}; applies once regardless of flankers`; } },
   { id: "combined", label: "Higher + outflanked", shortLabel: "H+O", heightAdvantage: 1, outflanker: "a", description: "Row is higher and column is outflanked; the modifiers stack" }
 ];
 
@@ -109,6 +111,458 @@ let generatorConfig = loadGeneratorConfig();
 let generatorCandidates = [];
 let generatorRunToken = 0;
 
+const BASELINE_KEY = "matchup-board-strike-baseline-v1";
+let baselineNotice = "";
+let balanceBaseline = loadBalanceBaseline();
+let inspectedA = units[0]?.id;
+let inspectedB = units[1]?.id;
+let inspectedOrder = .5;
+let inspectedScenario = "neutral";
+let similarityThreshold = 5;
+const UNIT_SITUATIONS_KEY = "matchup-board-unit-situations-v1";
+let unitSituations = loadUnitSituations();
+let modifierTestUnit = units.at(-1)?.id;
+let modifierThresholds = { underdog: 30, decisive: 60 };
+let modifierStorageNotice = "";
+const MODIFIER_RULES_KEY = "matchup-board-modifier-values-v1";
+let modifierRules = loadModifierRules();
+let modifierRulesNotice = "";
+
+
+function loadBalanceBaseline() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(BASELINE_KEY));
+    if (stored && validSavedUnits(stored.units)) return { ...stored, units: sanitiseUnits(stored.units) };
+  } catch { /* A fresh reference is safe when no stored reference can be read. */ }
+  return captureBalanceBaseline();
+}
+
+function captureBalanceBaseline() {
+  const baseline = { units: sanitiseUnits(units), savedAt: new Date().toISOString() };
+  try { localStorage.setItem(BASELINE_KEY, JSON.stringify(baseline)); }
+  catch { baselineNotice = "Reference available for this session only; browser storage is unavailable."; }
+  return baseline;
+}
+
+function balanceTable(headings) {
+  const wrapper = createElement("div", "balance-table-scroll");
+  const table = createElement("table", "balance-table");
+  const head = createElement("thead");
+  const row = createElement("tr");
+  headings.forEach(heading => {
+    const th = createElement("th", "", heading);
+    th.scope = "col";
+    row.append(th);
+  });
+  head.append(row);
+  const body = createElement("tbody");
+  table.append(head, body);
+  wrapper.append(table);
+  return { wrapper, body };
+}
+
+function balanceSection(title, description) {
+  const section = createElement("section", "balance-section");
+  section.append(createElement("h2", "", title), createElement("p", "balance-description", description));
+  return section;
+}
+
+function renderBalance() {
+  const view = createElement("div", "balance-view");
+  const entries = rankRoster(shownUnits, getMatchup);
+  const comparable = sameRoster(shownUnits, balanceBaseline.units);
+  const reference = comparable ? new Map(rankRoster(balanceBaseline.units, getMatchup).map(entry => [entry.unit.id, entry])) : new Map();
+  const inversions = targetInversions(entries, shownUnits);
+  const intendedRanks = new Map(shownUnits.map((unit, index) => [unit.id, index + 1]));
+  const metrics = createElement("div", "balance-metrics");
+  metrics.append(
+    createHealthMetric("Highest strike score", `${entries[0].average.toFixed(1)}%`, `${entries[0].unit.name} · equally weighted opponents`),
+    createHealthMetric("Mean engagement", `${formatMetric(entries.reduce((sum, entry) => sum + entry.rounds, 0) / entries.length)} rounds`, "Distinct pairs only · both units try to strike each round"),
+    createHealthMetric("Intended order", `${inversions.length} conflicts`, "Card order: first strongest, last weakest", inversions.length ? "warning" : "neutral")
+  );
+  view.append(metrics);
+
+  const ranking = balanceSection("Strength as you tune", "Average chance to win against every other unit, weighted equally. Ties share a rank. Drag the stat cards above into your intended order: strongest to weakest, left to right then top to bottom. Equal scores are flagged when they do not establish the intended order.");
+  const referenceBar = createElement("div", "balance-controls");
+  const save = createElement("button", "button button-quiet", "Use current stats as reference");
+  save.type = "button";
+  save.addEventListener("click", () => {
+    balanceBaseline = captureBalanceBaseline();
+    renderBalance();
+  });
+  referenceBar.append(save, createElement("span", "balance-description", baselineNotice || (comparable
+    ? "Changes compare with your saved reference, recalculated using the current strike rules."
+    : "Roster membership changed. Save a new reference to compare the same opponents.")));
+  ranking.append(referenceBar);
+  const table = balanceTable(["Rank", "Unit", "Avg win", "Change", "Rank change", "Intended rank"]);
+  entries.forEach(entry => {
+    const old = reference.get(entry.unit.id);
+    const row = createElement("tr");
+    const name = createElement("td");
+    name.append(createUnitHeading(entry.unit));
+    const movement = old ? old.rank - entry.rank : 0;
+    row.append(createElement("td", "", `#${entry.rank}`), name,
+      createElement("td", "score-number", `${entry.average.toFixed(1)}%`),
+      createElement("td", "", old ? `${formatPercentagePointDelta(entry.average - old.average, 1)} pp` : "—"),
+      createElement("td", "", old ? (movement ? `${movement > 0 ? "↑" : "↓"}${Math.abs(movement)}` : "—") : "—"), createElement("td", "", `#${intendedRanks.get(entry.unit.id)}`));
+    table.body.append(row);
+  });
+  ranking.append(table.wrapper);
+  if (inversions.length) {
+    const list = createElement("ul", "balance-conflicts");
+    inversions.forEach(({ stronger, weaker }) => list.append(createElement("li", "", `${stronger.unit.name} (intended #${intendedRanks.get(stronger.unit.id)}) should rank above ${weaker.unit.name} (intended #${intendedRanks.get(weaker.unit.id)}), but scores ${stronger.average.toFixed(1)}% versus ${weaker.average.toFixed(1)}%.`)));
+    ranking.append(list);
+  }
+  view.append(ranking, renderDurationInspector(), renderProfileDiagnostics());
+
+  const assumptions = createElement("details", "balance-assumptions");
+  assumptions.append(createElement("summary", "", "What these results measure"));
+  const list = createElement("ul");
+  [
+    "Rules.docx: Melee dice, Defence target, AP uses the lower of Defence and 3, exploding critical 6s, and immediate rout at 7 strain. All modifiers are added before enforcing the one-die minimum.",
+    `Baseline: two fresh units already in contact on level ground, neither outflanked. Each surviving unit strikes once per round. The first striker gains +${modifierRules.initiative} Initiative because its target has no command marker. Current experimental values: height ±${modifierRules.height}, outflanking ±${modifierRules.outflanking}.`,
+    "Activation order is independently 50/50 each round for roster rankings. This is a modelling assumption: bidding and Master Tactician decisions are not random in the game. The inspector can test either unit always going first.",
+    "The duration chart is the exact probability of ending in each round for the selected pair. The last bar retains all probability beyond the displayed horizon; it is not a draw. A round here is a round with both units committed to striking, not a prediction of elapsed tabletop rounds.",
+    "Shooting, evasion, movement, rallying, allies, command scarcity, disengagement and camp/leader objectives are outside this strike benchmark. Mobility does not directly add strike dice. A lower strike rank can still be appropriate for a tactically valuable unit.",
+    "Roster composition affects ranks and similarity. The stat cards express your intended order; a 50% score for every unit is not a balancing requirement. The generator searches with approximate scores; check candidates here before adopting them."
+  ].forEach(text => list.append(createElement("li", "", text)));
+  assumptions.append(list);
+  view.append(assumptions);
+  resultStage.replaceChildren(view);
+}
+
+function renderDurationInspector() {
+  const section = balanceSection("How long does an engagement last?", "Inspect the spread of possible endings, including long fights. Positional modifiers are held constant throughout this engagement.");
+  if (!shownUnits.some(unit => unit.id === inspectedA)) inspectedA = shownUnits[0].id;
+  if (!shownUnits.some(unit => unit.id === inspectedB) || inspectedB === inspectedA) inspectedB = shownUnits.find(unit => unit.id !== inspectedA).id;
+  const controls = createElement("div", "balance-controls");
+  const addSelect = (labelText, options, value, onChange) => {
+    const label = createElement("label", "balance-select", labelText);
+    const select = createElement("select");
+    options.forEach(([id, text]) => {
+      const option = createElement("option", "", text);
+      option.value = String(id);
+      option.selected = String(value) === String(id);
+      select.append(option);
+    });
+    select.addEventListener("change", () => { onChange(select.value); renderBalance(); });
+    label.append(select);
+    controls.append(label);
+  };
+  addSelect("Unit A", shownUnits.map(unit => [unit.id, unit.name]), inspectedA, value => { inspectedA = value; });
+  addSelect("Unit B", shownUnits.filter(unit => unit.id !== inspectedA).map(unit => [unit.id, unit.name]), inspectedB, value => { inspectedB = value; });
+  addSelect("Each round starts with", [[.5, "Either unit · 50/50"], [1, "Unit A always"], [0, "Unit B always"]], inspectedOrder, value => { inspectedOrder = Number(value); });
+  addSelect("Unit A's position", [["neutral", "Neutral"], ["higher", "Higher"], ["outflanking", "Outflanking"], ["combined", "Higher + outflanking"]], inspectedScenario, value => { inspectedScenario = value; });
+  const a = shownUnits.find(unit => unit.id === inspectedA);
+  const b = shownUnits.find(unit => unit.id === inspectedB);
+  const key = `duration:${inspectedOrder}:${matchupKey(a, b, matrixScenarioById(inspectedScenario))}`;
+  if (!matchupCache.has(key)) matchupCache.set(key, resolveRulesMatchup({ ...a, shooting: false }, { ...b, shooting: false }, {
+    ...matrixScenarioById(inspectedScenario), modifiers: modifierRules, firstProbabilityA: inspectedOrder, durationRounds: 12
+  }));
+  const result = matchupCache.get(key);
+  const duration = result.duration;
+  const summary = createElement("p", "duration-summary", `${a.name} wins ${result.shareA.toFixed(1)}% · Mean ${formatMetric(result.battleRounds)} rounds · Median ${duration.median ?? ">12"} · 90th percentile ${duration.p90 ?? ">12"} rounds`);
+  const chart = createElement("div", "duration-chart");
+  chart.setAttribute("role", "list");
+  chart.setAttribute("aria-label", "Probability that the selected engagement ends in each round");
+  const values = [...duration.probabilities, duration.tail];
+  const largest = Math.max(...values, .01);
+  values.forEach((probability, index) => {
+    const column = createElement("div", "duration-column");
+    const label = index === 12 ? "13+" : String(index + 1);
+    const percent = probability * 100;
+    const formatted = percent > 0 && percent < .1 ? "<0.1%" : `${percent.toFixed(1)}%`;
+    column.title = `Ends in round ${label}: ${formatted}`;
+    column.setAttribute("role", "listitem");
+    column.setAttribute("aria-label", column.title);
+    const bar = createElement("div", "duration-bar");
+    bar.style.height = `${Math.max(0, probability / largest * 120)}px`;
+    column.append(createElement("span", "duration-probability", formatted), bar, createElement("span", "duration-round", label));
+    chart.append(column);
+  });
+  section.append(controls, summary, chart, createElement("p", "balance-description", "Round in which either unit routs · 13+ includes every longer engagement"));
+  return section;
+}
+
+function renderProfileDiagnostics() {
+  const section = balanceSection("Are any units filling the same role?", "Compare win chances against common opponents, excluding the two units themselves. Raw difference includes strength; role difference removes their average strength gap. Smaller differences mean more similar matchups.");
+  const control = createElement("label", "balance-select", "Flag role differences below (percentage points)");
+  const threshold = createElement("input");
+  threshold.type = "number";
+  threshold.min = "0";
+  threshold.max = "100";
+  threshold.step = "1";
+  threshold.value = String(similarityThreshold);
+  threshold.addEventListener("change", () => { similarityThreshold = safeNumber(threshold.value, 5, 0, 100); renderBalance(); });
+  control.append(threshold);
+  section.append(control);
+  if (shownUnits.length < 4) {
+    section.append(createElement("p", "balance-description", "Add at least four units to distinguish role patterns across two or more common opponents."));
+    return section;
+  }
+  const pairs = [];
+  shownUnits.forEach((a, index) => shownUnits.slice(index + 1).forEach(b => pairs.push(compareProfiles(a, b, shownUnits, getMatchup))));
+  pairs.sort((a, b) => a.centred - b.centred || a.raw - b.raw);
+  const flagged = pairs.filter(pair => pair.centred < similarityThreshold || pair.centred < 1e-7);
+  section.append(createElement("p", "profile-warning", `${flagged.length} of ${pairs.length} pairs have similar roles at this threshold. Showing the ${Math.min(10, pairs.length)} closest pairs. This is a design prompt, not a requirement that every role be unique.`));
+  const table = balanceTable(["Pair", "Raw difference", "Role difference", "Opposing counters"]);
+  pairs.slice(0, 10).forEach(pair => {
+    const row = createElement("tr", pair.centred < similarityThreshold || pair.centred < 1e-7 ? "similar-pair" : "");
+    row.append(createElement("td", "", `${pair.a.name} / ${pair.b.name}`),
+      createElement("td", "", `${pair.raw.toFixed(1)} pp`), createElement("td", "", `${pair.centred.toFixed(1)} pp`),
+      createElement("td", "", `${pair.differentCounters} / ${pair.rows.length}`));
+    table.body.append(row);
+  });
+  section.append(table.wrapper, createElement("p", "balance-description", "Differences are RMS percentage points. Opposing counters count common opponents where one unit wins at least 60% and the other at most 40%. More common opponents make role comparisons more informative."));
+  return section;
+}
+
+function loadModifierRules() {
+  try { return normaliseModifiers(JSON.parse(localStorage.getItem(MODIFIER_RULES_KEY))); }
+  catch { return { ...DEFAULT_MODIFIERS }; }
+}
+
+function changeModifierRules(values) {
+  modifierRules = normaliseModifiers(values);
+  try {
+    localStorage.setItem(MODIFIER_RULES_KEY, JSON.stringify(modifierRules));
+    modifierRulesNotice = "";
+  } catch {
+    modifierRulesNotice = "Values are available for this session only; browser storage is unavailable.";
+  }
+  // Candidate scores and every cached matchup depend on these rule values.
+  generatorRunToken += 1;
+  generatorCandidates = [];
+  renderModifierRules();
+  updateResults(true);
+}
+
+function renderModifierRules() {
+  const controls = document.querySelector("#modifierRules");
+  controls.replaceChildren();
+  controls.append(createElement("strong", "modifier-rule-heading", "Modifier values"));
+  [
+    ["height", "Height ±", "Dice added to the higher unit and removed from the lower unit"],
+    ["outflanking", "Outflanking ±", "Dice added to the outflanking unit and removed from the outflanked unit"],
+    ["initiative", "Initiative +", "Extra dice for striking a target without a command marker"]
+  ].forEach(([field, text, description]) => {
+    const label = createElement("label", "modifier-rule-label", text);
+    label.title = description;
+    const input = createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "99";
+    input.step = "1";
+    input.value = String(modifierRules[field]);
+    input.dataset.modifierValue = field;
+    input.setAttribute("aria-label", `${field} modifier in dice`);
+    input.addEventListener("change", () => {
+      changeModifierRules({ ...modifierRules, [field]: input.value });
+      controls.querySelector(`[data-modifier-value="${field}"]`).focus();
+    });
+    label.append(input);
+    controls.append(label);
+  });
+  const defaults = Object.keys(DEFAULT_MODIFIERS).every(field => modifierRules[field] === DEFAULT_MODIFIERS[field]);
+  const reset = createElement("button", "button button-quiet", "Restore rule defaults");
+  reset.type = "button";
+  reset.disabled = defaults;
+  reset.addEventListener("click", () => changeModifierRules(DEFAULT_MODIFIERS));
+  controls.append(reset, createElement("span", "modifier-rule-status", defaults ? "Rules.docx defaults" : "Custom modifier values"));
+  controls.append(createElement("p", "modifier-rule-note", modifierRulesNotice || "Applies across the site. Set 0 to disable a modifier. Test height and outflanking in Modifiers or Matrix. Initiative 0 removes its bonus dice; acting first still resolves the attack first."));
+}
+
+function loadUnitSituations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(UNIT_SITUATIONS_KEY));
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).map(([id, value]) => [id, normaliseSituation(value)]));
+  } catch { return {}; }
+}
+
+function saveUnitSituations() {
+  try {
+    localStorage.setItem(UNIT_SITUATIONS_KEY, JSON.stringify(unitSituations));
+    modifierStorageNotice = "";
+  } catch {
+    modifierStorageNotice = "These situations are available for this session only; browser storage is unavailable.";
+  }
+}
+
+function getUnitModifiedMatchup(a, b, situations = unitSituations) {
+  const scenario = pairingSituation(a, b, situations);
+  if (!scenario.heightAdvantage && !scenario.outflanker && scenario.firstProbabilityA === .5) return getMatchup(a, b);
+  return getMatchup(a, b, scenario);
+}
+
+function renderModifiers() {
+  const view = createElement("div", "balance-view modifiers-view");
+  const impact = modifierImpact(shownUnits, getMatchup, getUnitModifiedMatchup);
+  const activeCount = shownUnits.filter(unit => Object.values(normaliseSituation(unitSituations[unit.id])).some(Boolean)).length;
+  const heading = balanceSection("Can positioning overcome strength?", "Compare the same stats and opponents with and without your chosen situations. These experiments apply in this view; Balance, Similarity and the generator use neutral combat. Conditions stay fixed throughout each engagement.");
+  const controls = createElement("div", "balance-controls");
+  const clear = createElement("button", "button button-quiet", "Clear all modifiers");
+  clear.type = "button";
+  clear.disabled = !activeCount;
+  clear.addEventListener("click", () => { unitSituations = {}; saveUnitSituations(); renderModifiers(); });
+  controls.append(clear, createElement("span", "balance-description", modifierStorageNotice || `${activeCount} units with situations · ${impact.affected} / ${impact.pairs.length} pairings affected`));
+  heading.append(controls);
+  const metrics = createElement("div", "balance-metrics");
+  metrics.append(
+    createHealthMetric("Mean odds shift", `${impact.meanAbsoluteDelta.toFixed(1)} pp`, "Mean absolute win-chance change across all distinct pairings"),
+    createHealthMetric("Favourites reversed", `${impact.reversals} / ${impact.pairs.length}`, `${impact.tiesBroken} neutral ties broken · reversals cross from below to above 50%`),
+    createHealthMetric("Engagement change", `${formatPercentagePointDelta(impact.meanRoundsDelta, 2)} rounds`, "Mean change across all distinct pairings; negative is faster")
+  );
+  heading.append(metrics);
+  view.append(heading);
+
+  const settings = balanceSection("Apply situations to individual units", `Rows follow your intended card order. Higher and lower give +${modifierRules.height}/−${modifierRules.height} dice; flank advantages give +${modifierRules.outflanking}/−${modifierRules.outflanking}. The opponent receives the opposing modifier automatically. Matching settings cancel, and opposite settings never double the bonus. Earlier activation gives that unit the first strike and Initiative each round; matching priorities remain 50/50.`);
+  const table = balanceTable(["Unit", "Height", "Flank", "Activation", "Neutral rank", "With modifiers", "Rank change", "Win chance", "Odds change"]);
+  const entries = new Map(impact.entries.map(entry => [entry.unit.id, entry]));
+  shownUnits.forEach(unit => {
+    const entry = entries.get(unit.id);
+    const situation = normaliseSituation(unitSituations[unit.id]);
+    const row = createElement("tr");
+    const name = createElement("td");
+    name.append(createUnitHeading(unit));
+    row.append(name);
+    [
+      ["height", [[-1, "Low"], [0, "Level"], [1, "High"]]],
+      ["flank", [[-1, "Outflanked"], [0, "Neutral"], [1, "Outflanking"]]],
+      ["order", [[-1, "Late"], [0, "Normal"], [1, "Early"]]]
+    ].forEach(([field, options]) => {
+      const cell = createElement("td");
+      const select = createElement("select");
+      select.dataset.modifierUnit = unit.id;
+      select.dataset.modifierField = field;
+      select.setAttribute("aria-label", `${unit.name}: ${field === "order" ? "activation priority" : field}`);
+      options.forEach(([value, label]) => {
+        const option = createElement("option", "", label);
+        option.value = String(value);
+        option.selected = situation[field] === value;
+        select.append(option);
+      });
+      select.addEventListener("change", () => {
+        unitSituations[unit.id] = { ...situation, [field]: Number(select.value) };
+        saveUnitSituations();
+        renderModifiers();
+        [...resultStage.querySelectorAll("[data-modifier-field]")].find(control => control.dataset.modifierUnit === unit.id && control.dataset.modifierField === field)?.focus();
+      });
+      cell.append(select);
+      row.append(cell);
+    });
+    row.append(createElement("td", "", `#${entry.before.rank}`), createElement("td", "score-number", `#${entry.rank}`),
+      createElement("td", "", entry.rankDelta ? `${entry.rankDelta > 0 ? "↑" : "↓"}${Math.abs(entry.rankDelta)}` : "—"),
+      createElement("td", "", `${entry.before.average.toFixed(1)}% → ${entry.average.toFixed(1)}%`),
+      createElement("td", "score-number", `${formatPercentagePointDelta(entry.winDelta, 1)} pp`));
+    table.body.append(row);
+  });
+  settings.append(table.wrapper, createElement("p", "balance-description", "All units are re-ranked together, including the opponents whose odds change. Base stats and your saved stat reference are untouched. A rank can stay the same even when odds change substantially."));
+  view.append(settings, renderModifierTests());
+
+  const changed = [...impact.pairs].filter(pair => Math.abs(pair.delta) > 1e-7 || Math.abs(pair.roundsDelta) > 1e-7)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  const matchups = balanceSection("Most affected matchups", "First named unit's win chance. Reversed means the favourite changed; breaking a neutral tie is reported separately. Showing up to 12 pairings with the largest odds changes.");
+  const detailTable = balanceTable(["Pairing", "Neutral", "Modified", "Change", "Mean rounds", "Outcome"]);
+  changed.slice(0, 12).forEach(pair => {
+    const row = createElement("tr");
+    row.append(createElement("td", "", `${pair.a.name} / ${pair.b.name}`),
+      createElement("td", "", `${pair.before.shareA.toFixed(1)}%`), createElement("td", "", `${pair.after.shareA.toFixed(1)}%`),
+      createElement("td", "", `${formatPercentagePointDelta(pair.delta, 1)} pp`),
+      createElement("td", "", `${formatMetric(pair.before.battleRounds)} → ${formatMetric(pair.after.battleRounds)}`),
+      createElement("td", "", pair.reversed ? "Favourite reversed" : pair.tieBroken ? "Tie broken" : "Favourite unchanged"));
+    detailTable.body.append(row);
+  });
+  matchups.append(changed.length ? detailTable.wrapper : createElement("p", "balance-description", "Choose a situation above to see which matchups change."));
+  view.append(matchups);
+  resultStage.replaceChildren(view);
+}
+
+function renderModifierTests() {
+  const section = balanceSection("Test each advantage on its own", "Your goal: positioning should be decisive even across large strength gaps. Each test below gives only the selected unit an advantage; every opponent is neutral. These tests are independent of the situations above.");
+  if (!shownUnits.some(unit => unit.id === modifierTestUnit)) modifierTestUnit = shownUnits.at(-1).id;
+  const target = shownUnits.find(unit => unit.id === modifierTestUnit);
+  const controls = createElement("div", "balance-controls");
+  const label = createElement("label", "balance-select", "Test unit");
+  const select = createElement("select");
+  select.dataset.modifierTestUnit = "";
+  shownUnits.forEach(unit => {
+    const option = createElement("option", "", unit.name);
+    option.value = unit.id;
+    option.selected = unit.id === modifierTestUnit;
+    select.append(option);
+  });
+  select.addEventListener("change", () => { modifierTestUnit = select.value; renderModifiers(); resultStage.querySelector("[data-modifier-test-unit]").focus(); });
+  label.append(select);
+  controls.append(label);
+  [["Large gap: neutral win chance at most", "underdog", 0, 49], ["Decisive: modified win chance at least", "decisive", 51, 100]].forEach(([text, field, min, max]) => {
+    const control = createElement("label", "balance-select", `${text} (%)`);
+    const input = createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.value = String(modifierThresholds[field]);
+    input.dataset.modifierThreshold = field;
+    input.addEventListener("change", () => {
+      modifierThresholds[field] = safeNumber(input.value, modifierThresholds[field], min, max);
+      renderModifiers();
+      resultStage.querySelector(`[data-modifier-threshold="${field}"]`).focus();
+    });
+    control.append(input);
+    controls.append(control);
+  });
+  section.append(controls);
+  const presets = [
+    { label: "Higher", situation: { height: 1 }, note: `+${modifierRules.height} dice for this unit, −${modifierRules.height} for its opponent` },
+    { label: "Outflanking", situation: { flank: 1 }, note: `+${modifierRules.outflanking} dice for this unit, −${modifierRules.outflanking} for its opponent` },
+    { label: "Acts first every round", situation: { order: 1 }, note: `Includes both earlier damage and +${modifierRules.initiative} Initiative dice` },
+    { label: "Higher + outflanking", situation: { height: 1, flank: 1 }, note: `Combined positional advantage: +${modifierRules.height + modifierRules.outflanking}/−${modifierRules.height + modifierRules.outflanking} dice, before the final-pool minimum` }
+  ];
+  const opponents = shownUnits.filter(unit => unit.id !== target.id);
+  const underdogs = opponents.filter(opponent => getMatchup(target, opponent).shareA <= modifierThresholds.underdog + 1e-7);
+  const runs = presets.map(preset => {
+    const situations = { [target.id]: normaliseSituation(preset.situation) };
+    const resolve = (a, b) => getUnitModifiedMatchup(a, b, situations);
+    const entry = modifierImpact(shownUnits, getMatchup, resolve).entries.find(entry => entry.unit.id === target.id);
+    return { ...preset, situations, resolve, entry, successes: underdogs.filter(opponent => resolve(target, opponent).shareA >= modifierThresholds.decisive - 1e-7) };
+  });
+  const table = balanceTable(["Advantage", "Rank", "Odds change", "Rounds change", "Large gaps overcome", ""]);
+  runs.forEach(run => {
+    const row = createElement("tr");
+    const name = createElement("td", "", run.label);
+    name.title = run.note;
+    const applyCell = createElement("td");
+    const apply = createElement("button", "button button-quiet", "Apply test");
+    apply.type = "button";
+    apply.title = `Set only ${target.name}'s situation to this test and clear other units' situations`;
+    apply.addEventListener("click", () => { unitSituations = run.situations; saveUnitSituations(); renderModifiers(); });
+    applyCell.append(apply);
+    row.append(name, createElement("td", "", `#${run.entry.before.rank} → #${run.entry.rank}`),
+      createElement("td", "", `${formatPercentagePointDelta(run.entry.winDelta, 1)} pp`),
+      createElement("td", "", `${formatPercentagePointDelta(run.entry.roundsDelta, 2)}`),
+      createElement("td", "score-number", underdogs.length ? `${run.successes.length} / ${underdogs.length}` : "No large gaps"), applyCell);
+    table.body.append(row);
+  });
+  section.append(table.wrapper, createElement("p", "balance-description", `Large gaps overcome counts opponents where ${target.name} improves from ≤${modifierThresholds.underdog}% to ≥${modifierThresholds.decisive}% win chance. These editable thresholds express a design goal, not a rule. Acting first measures timing plus Initiative together. “Apply test” clears other situations.`));
+  if (underdogs.length) {
+    const pairs = balanceTable([`${target.name} against`, "Neutral", ...runs.map(run => run.label)]);
+    underdogs.forEach(opponent => {
+      const row = createElement("tr");
+      row.append(createElement("td", "", opponent.name), createElement("td", "", `${getMatchup(target, opponent).shareA.toFixed(1)}%`));
+      runs.forEach(run => {
+        const share = run.resolve(target, opponent).shareA;
+        const passed = share >= modifierThresholds.decisive - 1e-7;
+        row.append(createElement("td", passed ? "modifier-goal-met" : "", `${share.toFixed(1)}%${passed ? " ✓" : ""}`));
+      });
+      pairs.body.append(row);
+    });
+    section.append(pairs.wrapper);
+  } else {
+    section.append(createElement("p", "balance-description", "This unit has no neutral matchups within your large-gap threshold. Choose a weaker unit or change the threshold to test this goal."));
+  }
+  return section;
+}
+
 function cloneUnits(value) {
   return value.map(unit => ({ ...unit }));
 }
@@ -129,10 +583,12 @@ function sanitiseUnits(value) {
   return value.slice(0, MAX_UNITS).map((unit, index) => ({
     id: String(unit.id || `unit-${Date.now()}-${index}`),
     name: String(unit.name || "").trim().slice(0, 24) || `Unit ${index + 1}`,
+    pace: safeNumber(unit.pace, 0, 0, 99),
     strike: safeNumber(unit.strike, 1, 1, 99),
     drill: safeNumber(unit.drill, 0, 0, 99),
     speed: safeNumber(unit.speed, 0, 0, 99),
-    shooting: Boolean(unit.shooting),
+    shooting: Boolean(unit.shooting), // Retained for compatibility; the strike benchmark ignores this legacy flag.
+    targetTier: safeNumber(unit.targetTier, 0, 0, 5), // Legacy saved field; intended rank now comes only from card order.
     ap: Boolean(unit.ap),
     defense: safeNumber(unit.defense, 4, 1, 6),
     hp: 7,
@@ -146,8 +602,8 @@ function validSavedUnits(value) {
 
 function isExampleRoster(value) {
   if (!validSavedUnits(value) || value.length !== DEFAULT_UNITS.length) return false;
-  const comparable = unitsToCompare => sanitiseUnits(unitsToCompare).map(({ id, name, strike, drill, speed, shooting, ap, defense, hp, color }) => (
-    { id, name, strike, drill, speed, shooting, ap, defense, hp, color }
+  const comparable = unitsToCompare => sanitiseUnits(unitsToCompare).map(({ id, name, pace, strike, drill, speed, shooting, ap, defense, hp, color }) => (
+    { id, name, pace, strike, drill, speed, shooting, ap, defense, hp, color }
   ));
   return JSON.stringify(comparable(value)) === JSON.stringify(comparable(DEFAULT_UNITS));
 }
@@ -200,7 +656,10 @@ function packSetUnits(value) {
     unit.hp,
     unit.color,
     unit.drill,
-    unit.speed
+    unit.speed,
+    unit.shooting ? 1 : 0,
+    unit.targetTier,
+    unit.pace
   ]);
 }
 
@@ -215,7 +674,10 @@ function unpackSetUnits(value) {
     hp: unit[5],
     color: unit[6],
     drill: unit[7],
-    speed: unit[8]
+    speed: unit[8],
+    shooting: unit[9] === 1,
+    targetTier: unit[10],
+    pace: unit[11]
   } : unit);
   return validSavedUnits(unpacked) ? sanitiseUnits(unpacked) : null;
 }
@@ -294,11 +756,10 @@ function saveUnitSets() {
 function defaultGeneratorUnitConstraint(unit = {}) {
   const current = {
     speed: safeNumber(unit.speed, 0, 0, 99),
-    drill: safeNumber(unit.drill, 0, 0, 99),
     strike: safeNumber(unit.strike, 5, 1, 99),
     defense: safeNumber(unit.defense, 4, 1, 6)
   };
-  const radius = { speed: 2, drill: 2, strike: 3, defense: 1 };
+  const radius = { speed: 2, strike: 3, defense: 1 };
   return {
     tags: "",
     goodAgainst: "",
@@ -307,7 +768,7 @@ function defaultGeneratorUnitConstraint(unit = {}) {
     stats: Object.fromEntries(GENERATOR_STATS.map(stat => [stat.id, {
       min: Math.max(stat.min, current[stat.id] - radius[stat.id]),
       max: Math.min(stat.max, current[stat.id] + radius[stat.id]),
-      locked: stat.id === "speed" || stat.id === "drill"
+      locked: stat.id === "speed"
     }]))
   };
 }
@@ -445,12 +906,12 @@ function loadUnits() {
   } catch {
     // Use the examples when stored data is unavailable or malformed.
   }
-  return cloneUnits(DEFAULT_UNITS);
+  return sanitiseUnits(DEFAULT_UNITS);
 }
 
 function loadView() {
   const saved = localStorage.getItem(VIEW_KEY);
-  return ["matrix", "similarity", "generator"].includes(saved) ? saved : "matrix";
+  return ["balance", "modifiers", "matrix", "similarity", "generator"].includes(saved) ? saved : "balance";
 }
 
 function loadSimilarityMetric() {
@@ -580,28 +1041,29 @@ function updateResults(immediate = false) {
 function renderEditor() {
   unitGrid.replaceChildren();
 
-  units.forEach(unit => {
+  units.forEach((unit, index) => {
     const card = unitCardTemplate.content.firstElementChild.cloneNode(true);
     card.dataset.id = unit.id;
     card.style.setProperty("--unit-color", unit.color);
 
     const nameInput = card.querySelector('[data-field="name"]');
     const colorInput = card.querySelector('[data-field="color"]');
+    const paceInput = card.querySelector('[data-field="pace"]');
     const strikeInput = card.querySelector('[data-field="strike"]');
-    const drillInput = card.querySelector('[data-field="drill"]');
     const speedInput = card.querySelector('[data-field="speed"]');
     const defenseInput = card.querySelector('[data-field="defense"]');
-    const shootingInput = card.querySelector('[data-field="shooting"]');
     const apInput = card.querySelector('[data-field="ap"]');
     const removeButton = card.querySelector('[data-action="remove"]');
 
+    const dragHandle = card.querySelector('[data-action="drag"]');
+    dragHandle.title = `Intended rank #${index + 1}. Drag to change the intended strength order.`;
+    dragHandle.setAttribute("aria-label", `${unit.name}: intended rank ${index + 1}. Drag to reorder.`);
     nameInput.value = unit.name;
     colorInput.value = unit.color;
+    paceInput.value = unit.pace;
     strikeInput.value = unit.strike;
-    drillInput.value = unit.drill;
     speedInput.value = unit.speed;
     defenseInput.value = unit.defense;
-    shootingInput.checked = Boolean(unit.shooting);
     apInput.checked = unit.ap;
     removeButton.disabled = units.length <= MIN_UNITS;
     removeButton.setAttribute("aria-label", `Remove ${unit.name}`);
@@ -809,7 +1271,7 @@ function matchupKey(a, b, scenario = COMBAT_SCENARIOS[0]) {
     unit.defense,
     unit.hp
   ].join(":");
-  return `current-v8:${scenario.id}|${unitKey(a)}|${unitKey(b)}`;
+  return `current-v10:${modifierRules.height}:${modifierRules.outflanking}:${modifierRules.initiative}:${scenario.id}:${scenario.heightAdvantage || 0}:${scenario.outflanker || "-"}:${scenario.firstProbabilityA ?? .5}|${unitKey(a)}|${unitKey(b)}`;
 }
 
 function reverseCombatMatchup(matchup) {
@@ -824,6 +1286,8 @@ function reverseCombatMatchup(matchup) {
     ...matchup,
     a: matchup.b,
     b: matchup.a,
+    initiativePoolA: matchup.initiativePoolB,
+    initiativePoolB: matchup.initiativePoolA,
     effectiveStrikeA: matchup.effectiveStrikeB,
     effectiveStrikeB: matchup.effectiveStrikeA,
     strikeAdjustmentA: matchup.strikeAdjustmentB,
@@ -880,10 +1344,12 @@ function getMatchup(a, b, scenario = COMBAT_SCENARIOS[0]) {
       return reversed;
     }
   }
-  const matchup = resolveRulesMatchup(a, b, {
+  const matchup = resolveRulesMatchup({ ...a, shooting: false }, { ...b, shooting: false }, {
+    modifiers: modifierRules,
     heightAdvantage: scenario.heightAdvantage,
     outflanker: scenario.outflanker,
-    scenarioId: scenario.id
+    scenarioId: scenario.id,
+    firstProbabilityA: scenario.firstProbabilityA
   });
   matchupCache.set(key, matchup);
   return matchup;
@@ -909,16 +1375,16 @@ function matchupStrikeText(unit, effectiveStrike, heightAdjustment, outflankAdju
   if (outflankAdjustment) changes.push(`outflanking ${signedModifier(outflankAdjustment)}`);
   if (evasionAdjustment) changes.push(`evasion ${signedModifier(evasionAdjustment)}`);
   if (!changes.length) return `${effectiveStrike} dice`;
-  return `${effectiveStrike} dice (base STR ${unit.strike}, ${changes.join(", ")})`;
+  return `${effectiveStrike} dice (base Melee ${unit.strike}, ${changes.join(", ")})`;
 }
 
 function matchupInitiativeText() {
-  return "Both possible first activations are weighted equally. The first striker attacks a target that has not activated and gains +1 die; the reply does not. Every natural 6 adds another die against the same target number, and additional 6s repeat the process.";
+  return `Both possible first activations are weighted equally. The first striker attacks a target that has not activated and gains +${modifierRules.initiative} dice; the reply does not. Every natural 6 adds another die against the same target number, and additional 6s repeat the process.`;
 }
 
 function matchupTitle(matchup) {
   const openingText = ` Opening outcomes: ${matchup.a.name} first ${Math.round(matchup.chanceAWhenFirst * 100)}%; ${matchup.b.name} first ${Math.round(matchup.chanceAWhenSecond * 100)}% for ${matchup.a.name}.`;
-  const attackText = (side, opponent, suffix) => `${side.name}: ${matchupStrikeText(side, matchup[`effectiveStrike${suffix}`], matchup[`heightAdjustment${suffix}`], matchup[`outflankAdjustment${suffix}`], matchup[`evasionAdjustment${suffix}`])}, or ${matchup[`effectiveStrike${suffix}`] + matchup.firstStrikeBonus} dice with First Strike, hitting on ${hitTarget(side, opponent)}, ${matchup[`expectedHits${suffix}`].toFixed(2)} expected strain per ordinary attack with Critical Hits and ${formatMetric(matchup[`soloTurns${suffix}`])} uninterrupted rounds to defeat the target. When it wins: ${formatMetric(matchup[`victoryHp${suffix}`])} HP remaining.`;
+  const attackText = (side, opponent, suffix) => `${side.name}: ${matchupStrikeText(side, matchup[`effectiveStrike${suffix}`], matchup[`heightAdjustment${suffix}`], matchup[`outflankAdjustment${suffix}`], matchup[`evasionAdjustment${suffix}`])}, or ${matchup[`initiativePool${suffix}`]} dice with Initiative, hitting on ${hitTarget(side, opponent)}, ${matchup[`expectedHits${suffix}`].toFixed(2)} expected strain per ordinary attack with Critical Hits and ${formatMetric(matchup[`soloTurns${suffix}`])} unanswered strikes to rout the target (without Initiative). When it wins: ${formatMetric(side.hp - matchup[`victoryHp${suffix}`])} strain.`;
   return `Expected combat duration: ${formatMetric(matchup.battleRounds)} rounds.${openingText} ${attackText(matchup.a, matchup.b, "A")} ${attackText(matchup.b, matchup.a, "B")} ${matchupInitiativeText()}`;
 }
 
@@ -1117,10 +1583,10 @@ function renderBars() {
         createElement("b", "", `${formatMetric(victory.rounds)} rounds`)
       );
       const hp = createElement("span", "victory-metric hp-metric");
-      hp.title = `Expected HP remaining when ${victory.unit.name} wins`;
+      hp.title = `Expected strain when ${victory.unit.name} wins`;
       hp.append(
         createElement("i", "heart-icon", "♥"),
-        createElement("b", "", `${formatMetric(victory.hp)} HP`)
+        createElement("b", "", `${formatMetric(victory.unit.hp - victory.hp)} strain`)
       );
       const hpGauge = createElement("span", "survivor-gauge");
       hpGauge.style.setProperty("--hp-left", `${Number.isFinite(victory.hp) ? Math.min(100, victory.hp / victory.unit.hp * 100) : 0}%`);
@@ -1177,9 +1643,11 @@ function strengthEntries(resolveMatchup = getMatchup) {
 }
 
 function sortedStrengthEntries(entries) {
-  return [...entries].sort((a, b) =>
-    b.average - a.average || b.wins - a.wins || a.index - b.index
-  );
+  const sorted = [...entries].sort((a, b) => b.average - a.average || a.index - b.index);
+  return sorted.map((entry, index) => ({
+    ...entry,
+    rank: sorted.findIndex(other => Math.abs(other.average - entry.average) < 1e-7) + 1 || index + 1
+  }));
 }
 
 function matchupPatternDistance(a, b, centreProfiles = false, resolveMatchup = getMatchup) {
@@ -1266,6 +1734,7 @@ function matrixEngagementLength(matrixUnits, scenario = COMBAT_SCENARIOS[0]) {
   const rounds = [];
   matrixUnits.forEach(rowUnit => {
     matrixUnits.forEach(opponent => {
+      if (rowUnit.id === opponent.id) return;
       const value = getMatrixMatchup(rowUnit, opponent, scenario).battleRounds;
       if (Number.isFinite(value)) rounds.push(value);
     });
@@ -1418,12 +1887,12 @@ function renderMatrix() {
   const matrixUnits = matrixUnitOrder(currentStrengthEntries);
   const strengths = new Map(currentStrengthEntries.map(entry => [entry.unit.id, entry.average]));
   const currentRanks = new Map(sortedStrengthEntries(currentStrengthEntries)
-    .map((entry, index) => [entry.unit.id, index + 1]));
+    .map(entry => [entry.unit.id, entry.rank]));
   const baselineStrengthEntries = activeScenario.id === "neutral"
     ? currentStrengthEntries
     : strengthEntries((unit, opponent) => getMatrixMatchup(unit, opponent, COMBAT_SCENARIOS[0]));
   const baselineRanks = new Map(sortedStrengthEntries(baselineStrengthEntries)
-    .map((entry, index) => [entry.unit.id, index + 1]));
+    .map(entry => [entry.unit.id, entry.rank]));
   const rankChanges = matrixUnits.map(unit => ({
     unit,
     movement: baselineRanks.get(unit.id) - currentRanks.get(unit.id)
@@ -1433,7 +1902,7 @@ function renderMatrix() {
   const impact = createElement("div", "matrix-impact");
   const length = matrixEngagementLength(matrixUnits, activeScenario);
   const lengthItem = createElement("div", "matrix-impact-item");
-  lengthItem.title = `Uniform average across all ${length.count} row/column pairings, including mirror matches. The median and range compare each pairing's own expected duration.`;
+  lengthItem.title = `Uniform average across all ${length.count} row/column pairings, excluding mirror matches. The median and range compare each pairing's own expected duration.`;
   lengthItem.append(
     createElement("span", "matrix-impact-name", "Engagement length"),
     createElement("strong", "", `${formatMetric(length.average)} rounds avg`),
@@ -1848,7 +2317,7 @@ function renderHealth() {
   const balanceError = Math.sqrt(
     entries.reduce((total, entry) => total + (entry.average - 50) ** 2, 0) / entries.length
   );
-  const balanceTone = balanceError <= 5 ? "good" : balanceError <= 10 ? "warning" : "risk";
+  const balanceTone = "neutral";
   const activePairs = [];
   for (let first = 0; first < shownUnits.length; first += 1) {
     for (let second = first + 1; second < shownUnits.length; second += 1) {
@@ -1910,9 +2379,9 @@ function renderHealth() {
   const metrics = createElement("div", "health-metrics");
   metrics.append(
     createHealthMetric(
-      "Balance error",
+      "Strength spread",
       `${formatMetric(balanceError)} pts`,
-      "RMS deviation of unit-average win rates from 50%",
+      "Strength spread around 50%; unequal strength can be intentional",
       balanceTone
     ),
     createHealthMetric(
@@ -2147,7 +2616,8 @@ function generatorRosterMetrics(roster) {
   const metrics = calculateGeneratorMetrics(
     roster,
     generatorConfig.settings,
-    generatorConfig.objectives
+    generatorConfig.objectives,
+    modifierRules
   );
   let changeTotal = 0;
   let changeParts = 0;
@@ -2302,7 +2772,7 @@ function renderGeneratorCandidates(view) {
   const copy = createElement("div");
   copy.append(
     createElement("strong", "", "Generated candidates"),
-    createElement("span", "", "Scores estimate the five selected goals; apply a roster to calculate its exact outcome matrix.")
+    createElement("span", "", "Scores estimate the five selected goals. Intended card order is checked in Balance after applying; the generator does not enforce them.")
   );
   heading.append(copy, createElement("span", "generator-step", `04 · ${generatorCandidates.length} results`));
   const list = createElement("div", "generator-candidate-list");
@@ -2401,7 +2871,7 @@ function renderGenerator() {
     ["advantageRankTarget", "+1 target rank gain", "Average places gained by non-leading units after receiving +1 attack die.", .25, 5, .25, "places"],
     ["engagementTarget", "Average engagement", "Desired average length across all pairings, including mirrors.", 1.5, 8, .25, "rounds"],
     ["engagementTolerance", "Length tolerance", "How far engagement length may drift before its score falls sharply.", .1, 2, .1, "± rounds"],
-    ["mobilityTaxTarget", "Mobility/Drill power tax", "Desired base win-rate decline per combined Mobility or Drill point.", .1, 5, .1, "pp/stat"],
+    ["mobilityTaxTarget", "Mobility power tax", "Desired base win-rate decline per Mobility point.", .1, 5, .1, "pp/stat"],
     ["apDiceGapTarget", "AP attack-die gap", "How many fewer attack dice an AP unit should have than its closest non-AP peer.", .5, 6, .5, "dice"],
     ["candidateCount", "Candidate rosters", "How many of the best alternatives to keep.", 3, 12, 1, ""]
   ].forEach(([id, label, description, min, max, step, suffix]) => {
@@ -2946,25 +3416,33 @@ function renderProfile() {
 }
 
 function renderResults() {
-  const matchupCount = shownUnits.length * (shownUnits.length - 1);
+  const matchupCount = shownUnits.length * (shownUnits.length - 1) / 2;
   const matrixMatchupCount = shownUnits.length * shownUnits.length;
   resultsPanel.classList.toggle("matrix-layout", activeView === "matrix");
-  resultsTitle.textContent = activeView === "generator" ? "Balance generator" : "Outcomes";
+  resultsTitle.textContent = activeView === "generator" ? "Balance generator" : activeView === "modifiers" ? "Modifier impact" : "Strike outcomes";
   generatorButton.classList.toggle("active", activeView === "generator");
   resultsMeta.textContent = activeView === "generator"
     ? `${units.length} units · constraints and objectives`
     : activeView === "matrix"
-      ? `${shownUnits.length} units · ${matrixMatchupCount} matchups · First Strike + Critical Hits`
-      : `${shownUnits.length} units · ${matchupCount} displayed matchups`;
+      ? `${shownUnits.length} units · ${matrixMatchupCount} matchups · Initiative + Critical Hits`
+      : `${shownUnits.length} units · ${matchupCount} distinct pairings`;
   outcomeKey.hidden = activeView !== "bars";
+  resultStage.setAttribute("role", "tabpanel");
+  if (activeView === "generator") resultStage.setAttribute("aria-labelledby", "generatorButton");
 
   viewButtons.forEach(button => {
     const selected = button.dataset.view === activeView;
     button.classList.toggle("active", selected);
     button.setAttribute("aria-selected", String(selected));
+    button.id = `view-${button.dataset.view}`;
+    button.setAttribute("aria-controls", "resultStage");
+    button.tabIndex = selected ? 0 : -1;
+    if (selected) resultStage.setAttribute("aria-labelledby", button.id);
   });
 
-  if (activeView === "matrix") renderMatrix();
+  if (activeView === "balance") renderBalance();
+  else if (activeView === "modifiers") renderModifiers();
+  else if (activeView === "matrix") renderMatrix();
   else if (activeView === "similarity") renderSimilarity();
   else if (activeView === "health") renderHealth();
   else if (activeView === "generator") renderGenerator();
@@ -3067,10 +3545,12 @@ addUnitButton.addEventListener("click", () => {
   units.push({
     id: `unit-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     name: `Unit ${units.length + 1}`,
+    pace: 0,
     strike: 5,
     drill: 0,
     speed: 0,
     shooting: false,
+    targetTier: 0,
     ap: false,
     defense: 4,
     hp: 7,
@@ -3085,8 +3565,8 @@ addUnitButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   if (!window.confirm("Restore the four example units?")) return;
-  units = cloneUnits(DEFAULT_UNITS);
-  shownUnits = cloneUnits(DEFAULT_UNITS);
+  units = sanitiseUnits(DEFAULT_UNITS);
+  shownUnits = cloneUnits(units);
   matchupOrders = {};
   matrixCustomOrder = DEFAULT_UNITS.map(unit => unit.id);
   matchupCache.clear();
@@ -3099,7 +3579,16 @@ resetButton.addEventListener("click", () => {
   setUpdating(false);
 });
 
-viewButtons.forEach(button => {
+viewButtons.forEach((button, index) => {
+  button.addEventListener("keydown", event => {
+    const next = event.key === "ArrowRight" ? (index + 1) % viewButtons.length
+      : event.key === "ArrowLeft" ? (index - 1 + viewButtons.length) % viewButtons.length
+        : event.key === "Home" ? 0 : event.key === "End" ? viewButtons.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    viewButtons[next].focus();
+    viewButtons[next].click();
+  });
   button.addEventListener("click", () => {
     activeView = button.dataset.view;
     localStorage.setItem(VIEW_KEY, activeView);
@@ -3117,6 +3606,7 @@ makeSortable(unitGrid, ".unit-card", "id");
 makeSortable(resultStage, ".matchup-card", "unitId");
 enableMatchupRowSorting();
 
+renderModifierRules();
 renderEditor();
 renderResults();
 renderUnitSets();

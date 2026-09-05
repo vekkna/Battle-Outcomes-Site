@@ -51,7 +51,7 @@
             <h1 id="rosterTitle">Units</h1>
             <span class="unit-count" id="unitCount">4 / 16</span>
           </div>
-          <div class="rules-note" title="Strike is the number of attack dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks use the lower of Defence and 3.">
+          <div class="rules-note" title="Melee is the number of strike dice. Normal attacks hit on the target's Defence value or higher; armour-piercing attacks use the lower of Defence and 3.">
             <span>Hits</span> on target DEF+ <i></i> AP uses lower of DEF / 3
           </div>
           <div class="fixed-rule-note" title="Every natural 6 rolls one additional die against the same target number. Additional dice can also generate additional dice.">
@@ -61,7 +61,9 @@
             <span aria-hidden="true">+</span> Add unit
           </button>
         </div>
+        <p class="scope-note">Drag cards into intended strength order: strongest first, left to right then top to bottom. Strike benchmark: rout at 7 strain; minimum 1 attack die.</p>
         <div class="unit-grid" id="unitGrid"></div>
+        <div id="modifierRules" class="modifier-rule-controls" aria-label="Combat modifier values"></div>
       </section>
 
       <section class="panel results-panel" aria-labelledby="resultsTitle">
@@ -72,9 +74,11 @@
           </div>
           <div class="outcome-key" aria-label="Matchup details key">
             <span><i aria-hidden="true">◷</i> expected rounds</span>
-            <span><i class="heart-key" aria-hidden="true">♥</i> winner's HP</span>
+            <span><i class="heart-key" aria-hidden="true">♥</i> winner's strain</span>
           </div>
           <div class="view-switcher" role="tablist" aria-label="Visualisation">
+            <button class="view-button" type="button" data-view="balance" role="tab" aria-selected="false">Balance</button>
+            <button class="view-button" type="button" data-view="modifiers" role="tab" aria-selected="false">Modifiers</button>
             <button class="view-button active" type="button" role="tab" aria-selected="true" data-view="matrix">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h3v3H2zm4.5 0h3v3h-3zM11 2h3v3h-3zM2 6.5h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3zM2 11h3v3H2zm4.5 0h3v3h-3zm4.5 0h3v3h-3z"/></svg>
               Matrix
@@ -107,15 +111,10 @@
         </button>
       </div>
       <div class="stats-row">
-        <label class="stat-control speed-control" title="Mobility rating; 3 or greater gives −2 to shooting attacks targeting this unit"><span>MOB</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
-        <label class="stat-control drill-control" title="Drill rating (not used by the Combat Matrix)"><span>DRL</span><input type="number" min="0" max="99" inputmode="numeric" data-field="drill"></label>
-        <label class="stat-control" title="Number of attack dice"><span>STR</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
+        <label class="stat-control pace-control" title="Pace: forward movement distance in inches. Movement is not simulated in this strike benchmark."><span>PACE</span><input type="number" min="0" max="99" inputmode="numeric" data-field="pace" aria-label="Pace in inches"></label>
+        <label class="stat-control speed-control" title="Mobility: pivots per activation. Positioning is not simulated in this strike benchmark."><span>MOB</span><input type="number" min="0" max="99" inputmode="numeric" data-field="speed"></label>
+        <label class="stat-control" title="Number of attack dice"><span>MEL</span><input type="number" min="1" max="99" inputmode="numeric" data-field="strike"></label>
         <label class="stat-control" title="Normal attacks hit on this value or higher"><span>DEF</span><input type="number" min="1" max="6" inputmode="numeric" data-field="defense"></label>
-        <label class="shooting-control" title="This unit uses shooting attacks; targets with Mobility 3+ impose −2 dice">
-          <input type="checkbox" data-field="shooting">
-          <span class="shooting-toggle" aria-hidden="true"></span>
-          <span>Shoot</span>
-        </label>
         <label class="ap-control" title="This unit's attack stat is armour-piercing and uses the lower of the target's Defence and 3">
           <input type="checkbox" data-field="ap">
           <span class="ap-toggle" aria-hidden="true"></span>

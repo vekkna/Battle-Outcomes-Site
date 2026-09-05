@@ -1,3 +1,5 @@
+import { normaliseModifiers } from "./combat-rules.js";
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const mean = values => values.length
@@ -9,21 +11,17 @@ function hitChance(attacker, defender) {
   return (7 - target) / 6;
 }
 
-function evasionModifier(attacker, defender) {
-  return attacker.shooting && defender.speed >= 3 ? -2 : 0;
+function expectedDamage(attacker, defender, attackerDice, initiative) {
+  // Equal first-activation probability; clamp AFTER Initiative is applied.
+  const averagePool = .5 * Math.max(1, attackerDice) + .5 * Math.max(1, attackerDice + initiative);
+  return averagePool * hitChance(attacker, defender) * 1.2;
 }
 
-function expectedDamage(attacker, defender, attackerDice) {
-  const finalPool = Math.max(0, attackerDice + evasionModifier(attacker, defender));
-  const averageFirstStrikePool = finalPool + 0.5;
-  return averageFirstStrikePool * hitChance(attacker, defender) * 1.2;
-}
-
-function matchupEstimate(a, b, bonusA, bonusB) {
+function matchupEstimate(a, b, bonusA, bonusB, initiative) {
   const diceA = Math.max(0, a.strike + bonusA);
   const diceB = Math.max(0, b.strike + bonusB);
-  const damageA = Math.max(.001, expectedDamage(a, b, diceA));
-  const damageB = Math.max(.001, expectedDamage(b, a, diceB));
+  const damageA = Math.max(.001, expectedDamage(a, b, diceA, initiative));
+  const damageB = Math.max(.001, expectedDamage(b, a, diceB, initiative));
   const roundsToKillA = b.hp / damageA;
   const roundsToKillB = a.hp / damageB;
   const advantage = Math.log(Math.max(.001, roundsToKillB) / Math.max(.001, roundsToKillA));
@@ -36,12 +34,13 @@ function matchupEstimate(a, b, bonusA, bonusB) {
   return { shareA, engagementRounds: clamp(engagementRounds, .5, 20) };
 }
 
-export function generatorShareMatrix(roster) {
+export function generatorShareMatrix(roster, modifiers) {
+  const { initiative } = normaliseModifiers(modifiers);
   const matrix = Array.from({ length: roster.length }, () => new Float64Array(roster.length));
   for (let first = 0; first < roster.length; first += 1) {
     matrix[first][first] = 50;
     for (let second = first + 1; second < roster.length; second += 1) {
-      const share = matchupEstimate(roster[first], roster[second], 0, 0).shareA;
+      const share = matchupEstimate(roster[first], roster[second], 0, 0, initiative).shareA;
       matrix[first][second] = share;
       matrix[second][first] = 100 - share;
     }
@@ -65,18 +64,21 @@ function ranks(values) {
   return result;
 }
 
-function specializationMetrics(matrix, averages) {
+function specializationMetrics(matrix) {
   const unitTotal = matrix.length;
   if (unitTotal < 4) return { roleSeparation: 0, profileRange: 0 };
   const nearest = new Array(unitTotal).fill(Infinity);
   for (let first = 0; first < unitTotal; first += 1) {
     for (let second = first + 1; second < unitTotal; second += 1) {
+      const common = matrix[first].map((_, index) => index).filter(index => index !== first && index !== second);
+      const averageFirst = mean([...common].map(index => matrix[first][index]));
+      const averageSecond = mean([...common].map(index => matrix[second][index]));
       let squaredDifference = 0;
       let comparisons = 0;
       for (let opponent = 0; opponent < unitTotal; opponent += 1) {
         if (opponent === first || opponent === second) continue;
-        const firstCentred = matrix[first][opponent] - averages[first];
-        const secondCentred = matrix[second][opponent] - averages[second];
+        const firstCentred = matrix[first][opponent] - averageFirst;
+        const secondCentred = matrix[second][opponent] - averageSecond;
         squaredDifference += (firstCentred - secondCentred) ** 2;
         comparisons += 1;
       }
@@ -95,7 +97,7 @@ function specializationMetrics(matrix, averages) {
   };
 }
 
-function advantageMetrics(roster, matrix, averages) {
+function advantageMetrics(roster, matrix, averages, initiative) {
   if (roster.length < 2) return { advantageRankGain: 0, advantageWinDelta: 0 };
   const baseRanks = ranks(averages);
   const rankGains = [];
@@ -103,7 +105,7 @@ function advantageMetrics(roster, matrix, averages) {
   roster.forEach((unit, index) => {
     const boostedResults = roster.map((opponent, opponentIndex) => opponentIndex === index
       ? 50
-      : matchupEstimate(unit, opponent, 1, 0).shareA);
+      : matchupEstimate(unit, opponent, 1, 0, initiative).shareA);
     const boostedAverage = mean(boostedResults.filter((_, opponent) => opponent !== index));
     winDeltas.push(boostedAverage - averages[index]);
     if (baseRanks[index] > 1) {
@@ -118,16 +120,16 @@ function advantageMetrics(roster, matrix, averages) {
   };
 }
 
-function engagementLength(roster) {
+function engagementLength(roster, initiative) {
   const rounds = [];
   roster.forEach(a => roster.forEach(b => {
-    rounds.push(matchupEstimate(a, b, 0, 0).engagementRounds);
+    if (a.id !== b.id) rounds.push(matchupEstimate(a, b, 0, 0, initiative).engagementRounds);
   }));
   return mean(rounds);
 }
 
 function mobilityMetrics(roster, averages) {
-  const mobility = roster.map(unit => unit.speed + unit.drill);
+  const mobility = roster.map(unit => unit.speed);
   const mobilityMean = mean(mobility);
   const strengthMean = mean(averages);
   let covariance = 0;
@@ -162,7 +164,6 @@ function apMetrics(roster) {
       const distance = unit => (
         Math.abs(unit.defense - apUnit.defense) * 3
         + Math.abs(unit.speed - apUnit.speed)
-        + Math.abs(unit.drill - apUnit.drill)
       );
       return distance(a) - distance(b) || a.strike - b.strike;
     })[0];
@@ -175,12 +176,13 @@ function scoreTowardsTarget(value, target, tolerance) {
   return Math.exp(-.5 * ((value - target) / Math.max(.01, tolerance)) ** 2);
 }
 
-export function generatorRosterMetrics(roster, settings, weights) {
-  const matrix = generatorShareMatrix(roster);
+export function generatorRosterMetrics(roster, settings, weights, modifiers) {
+  const rules = normaliseModifiers(modifiers);
+  const matrix = generatorShareMatrix(roster, rules);
   const averages = unitAverages(matrix);
-  const specialization = specializationMetrics(matrix, averages);
-  const advantage = advantageMetrics(roster, matrix, averages);
-  const engagementRounds = engagementLength(roster);
+  const specialization = specializationMetrics(matrix);
+  const advantage = advantageMetrics(roster, matrix, averages, rules.initiative);
+  const engagementRounds = engagementLength(roster, rules.initiative);
   const mobility = mobilityMetrics(roster, averages);
   const ap = apMetrics(roster);
 

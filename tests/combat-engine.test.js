@@ -5,7 +5,6 @@ import {
   FIRST_STRIKE_BONUS,
   attackTargetNumber,
   effectiveStrikes,
-  evasionModifier,
   explodingHitDistribution,
   hitChance,
   resolveRulesMatchup
@@ -51,11 +50,11 @@ test("critical hits chain against the same target number", () => {
   assert.ok(distribution[3] > 0);
 });
 
-test("a final attack pool can be zero", () => {
+test("zero-dice distribution is valid internally but a final attack pool has at least one die", () => {
   const distribution = explodingHitDistribution(0, 0.5, 7);
   assert.equal(distribution[0], 1);
   assert.equal(distribution.slice(1).reduce((sum, probability) => sum + probability, 0), 0);
-  assert.equal(effectiveStrikes(unit({ strike: 1 }), unit(), -20).strikeA, 0);
+  assert.equal(effectiveStrikes(unit({ strike: 1 }), unit(), -20).strikeA, 1);
 });
 
 test("height adds one die to the higher attacker and removes one from the lower", () => {
@@ -91,21 +90,17 @@ test("height and outflanking stack in the final attack pool", () => {
   assert.equal(result.effectiveStrikeB, 2);
 });
 
-test("evasion removes two shooting dice against Mobility 3 or greater", () => {
-  const shooter = unit({ name: "Shooter", shooting: true });
-  const mobile = unit({ name: "Mobile", speed: 3 });
-  const slow = unit({ name: "Slow", speed: 2 });
-  assert.equal(evasionModifier(shooter, mobile), -2);
-  assert.equal(evasionModifier(shooter, slow), 0);
-  assert.equal(evasionModifier(unit({ name: "Melee" }), mobile), 0);
-
-  const result = resolveRulesMatchup(shooter, mobile);
-  assert.equal(result.evasionAdjustmentA, -2);
-  assert.equal(result.effectiveStrikeA, 3);
-  assert.equal(result.evasionAdjustmentB, 0);
+test("legacy shooting and mobility fields do not affect strike outcomes", () => {
+  const a = unit({ name: "A", strike: 3 });
+  const b = unit({ name: "B", defense: 5 });
+  const plain = resolveRulesMatchup(a, b);
+  const legacy = resolveRulesMatchup({ ...a, shooting: true }, { ...b, speed: 3 });
+  assert.equal(legacy.shareA, plain.shareA);
+  assert.equal(legacy.battleRounds, plain.battleRounds);
+  assert.equal(legacy.evasionAdjustmentA, 0);
 });
 
-test("First Strike adds one die only to the first activation", () => {
+test("Initiative adds one die only to the first activation", () => {
   const a = unit({ name: "A", strike: 5, defense: 4 });
   const b = unit({ name: "B", strike: 5, defense: 4 });
   const result = resolveRulesMatchup(a, b);
@@ -176,4 +171,86 @@ test("all supported situations return finite probabilities within 0–100", () =
     assert.ok(result.shareA >= 0 && result.shareA <= 100);
     assert.ok(Number.isFinite(result.battleRounds));
   })));
+});
+
+test("all modifiers including Initiative precede the one-die minimum", () => {
+  const result = resolveRulesMatchup(unit({ strike: 1 }), unit({ strike: 1 }), {
+    heightAdvantage: -1, outflanker: "b"
+  });
+  assert.equal(result.effectiveStrikeA, 1);
+  assert.equal(result.initiativePoolA, 1);
+  assert.equal(result.initiativePoolB, 5);
+  assert.ok(Number.isFinite(result.battleRounds));
+});
+
+test("duration distribution agrees with an independently derived geometric engagement", () => {
+  // One strain remaining, Defence 4: two-die first strike misses with p=1/4;
+  // the one-die reply misses with p=1/2. A full round survives with p=1/8.
+  const result = resolveRulesMatchup(unit({ strike: 1, hp: 1 }), unit({ strike: 1, hp: 1 }), { durationRounds: 8 });
+  assert.ok(Math.abs(result.battleRounds - 8 / 7) < 1e-12);
+  result.duration.probabilities.forEach((value, index) => {
+    assert.ok(Math.abs(value - 7 / 8 * (1 / 8) ** index) < 1e-12);
+  });
+  assert.ok(Math.abs(result.duration.tail - (1 / 8) ** 8) < 1e-12);
+  assert.equal(result.duration.median, 1);
+  assert.equal(result.duration.p90, 2);
+});
+
+test("long engagement probability is retained in the tail", () => {
+  const result = resolveRulesMatchup(unit({ strike: 1, defense: 6 }), unit({ strike: 1, defense: 6 }), { durationRounds: 2 });
+  const duration = result.duration;
+  assert.ok(duration.tail > .9);
+  assert.equal(duration.median, null);
+  assert.equal(duration.p90, null);
+  assert.ok(Math.abs(duration.probabilities.reduce((sum, p) => sum + p, duration.tail) - 1) < 1e-10);
+});
+
+test("activation policy is explicit and symmetric under swapping units", () => {
+  const a = unit({ strike: 4, defense: 5 });
+  const b = unit({ strike: 7, defense: 3 });
+  const first = resolveRulesMatchup(a, b, { firstProbabilityA: 1 });
+  const reverse = resolveRulesMatchup(b, a, { firstProbabilityA: 0 });
+  assert.ok(Math.abs(first.shareA + reverse.shareA - 100) < 1e-9);
+  const second = resolveRulesMatchup(a, b, { firstProbabilityA: 0 });
+  assert.ok(first.shareA > second.shareA);
+});
+
+test("exact wins and duration agree with independent seeded dice simulation", () => {
+  let seed = 6178;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32; };
+  const a = unit({ strike: 2, defense: 5, ap: true });
+  const b = unit({ strike: 5, defense: 4 });
+  const trials = 30000;
+  let wins = 0;
+  let rounds = 0;
+  const histogram = Array(12).fill(0);
+  for (let trial = 0; trial < trials; trial += 1) {
+    const strain = [0, 0];
+    const fighters = [a, b];
+    let round = 0;
+    while (strain[0] < 7 && strain[1] < 7) {
+      round += 1;
+      const first = random() < .5 ? 0 : 1;
+      for (const [step, attacker] of [first, 1 - first].entries()) {
+        const defender = 1 - attacker;
+        const attack = fighters[attacker];
+        const target = attack.ap ? Math.min(3, fighters[defender].defense) : fighters[defender].defense;
+        // A is lower AND outflanked: -3; B gets +3. Minimum applies last.
+        let dice = Math.max(1, attack.strike + (attacker === 0 ? -3 : 3) + (step === 0 ? 1 : 0));
+        while (dice-- > 0) {
+          const roll = 1 + Math.floor(random() * 6);
+          if (roll >= target) strain[defender] += 1;
+          if (roll === 6) dice += 1;
+        }
+        if (strain[defender] >= 7) break;
+      }
+    }
+    wins += strain[1] >= 7 ? 1 : 0;
+    rounds += round;
+    if (round <= 12) histogram[round - 1] += 1;
+  }
+  const exact = resolveRulesMatchup(a, b, { heightAdvantage: -1, outflanker: "b", durationRounds: 12 });
+  assert.ok(Math.abs(exact.shareA / 100 - wins / trials) < .012);
+  assert.ok(Math.abs(exact.battleRounds - rounds / trials) < .03);
+  histogram.forEach((count, index) => assert.ok(Math.abs(count / trials - exact.duration.probabilities[index]) < .012));
 });
